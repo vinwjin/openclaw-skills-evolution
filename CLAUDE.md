@@ -11,13 +11,23 @@
 **技术形态**: OpenClaw Plugin（Node.js）
 
 **三阶段**:
-1. Phase 1: Bootstrap 注入 🚧
-2. Phase 2: 复盘 + 写 skill ⏳
-3. Phase 3: Skill edit/patch ⏳
+1. Phase 1: Bootstrap 注入 ✅ 核心逻辑完成（⚠️ plugin 未加载）
+2. Phase 2: 复盘 + 写 skill ⚠️ 9/12 测试通过
+3. Phase 3: Skill edit/patch ⏳ 未开始
 
 ---
 
-## 文档
+## 当前阻塞问题
+
+**plugin 未加载**
+- 症状：`openclaw plugins list` 中无 skill-wall
+- 符号链接：`~/.openclaw/extensions/skill-wall` ✅ 已创建
+- 可能原因：`package.json` 缺少 `exports` 字段
+- 参考：openclaw-lark 使用 `dist/index.js`，skill-wall 直接暴露根目录
+
+---
+
+## 技术约束
 
 | 文档 | 说明 |
 |------|------|

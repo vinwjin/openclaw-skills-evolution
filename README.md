@@ -50,7 +50,10 @@
 
 ## 项目状态
 
-🚧 **Phase 1 进行中** — Bootstrap 注入
+🚧 **Phase 1 核心逻辑完成（plugin 未加载）**
+- Phase 1: 核心代码完成，3/6 tasks 完成，⚠️ plugin 加载问题待修复
+- Phase 2: 9/12 测试通过（3 个失败）
+- Phase 3: 未开始
 
 ---
 

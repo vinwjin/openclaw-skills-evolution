@@ -161,6 +161,12 @@ function getHermesSkillsPath() {
 }
 
 // ---------------------------------------------------------------------------
+// Dependencies
+// ---------------------------------------------------------------------------
+
+const { parseSessionJsonl, analyzeConversationPatterns, generateSkillMarkdown } = require('./lib/skill-generator');
+
+// ---------------------------------------------------------------------------
 // Plugin Definition
 // ---------------------------------------------------------------------------
 
@@ -249,8 +255,109 @@ const plugin = {
       const config = api.getConfig();
       if (!config.enabled) return;
 
-      // Phase 2 implementation placeholder
-      // Will analyze session JSONL and generate new skills
+      console.error('[skill-wall] session_end hook triggered');
+
+      // Step 1: Get session ID from event
+      const sessionId = event?.sessionId || event?.sessionKey || event?.session_id;
+      if (!sessionId) {
+        console.error('[skill-wall] No sessionId found in event');
+        return;
+      }
+      console.error(`[skill-wall] Analyzing session: ${sessionId}`);
+
+      // Step 2: Read session JSONL file from ~/.openclaw/sessions/
+      const fs = await import('fs');
+      const path = await import('path');
+      const home = process.env.HOME || process.env.USERPROFILE || '~';
+      const sessionsDir = path.join(home, '.openclaw', 'sessions');
+
+      // Try different session file patterns
+      const sessionFilePatterns = [
+        path.join(sessionsDir, `${sessionId}.jsonl`),
+        path.join(sessionsDir, sessionId),
+        path.join(sessionsDir, `${sessionId}.json`)
+      ];
+
+      let sessionContent = null;
+      let sessionFilePath = null;
+
+      for (const pattern of sessionFilePatterns) {
+        try {
+          if (fs.existsSync(pattern)) {
+            sessionContent = fs.readFileSync(pattern, 'utf-8');
+            sessionFilePath = pattern;
+            break;
+          }
+        } catch (e) {
+          // Try next pattern
+        }
+      }
+
+      if (!sessionContent) {
+        // Try to find session file by matching partial sessionId
+        try {
+          const files = fs.readdirSync(sessionsDir);
+          const matchingFile = files.find(f => f.includes(sessionId) || sessionId.includes(f.replace('.jsonl', '')));
+          if (matchingFile) {
+            sessionFilePath = path.join(sessionsDir, matchingFile);
+            sessionContent = fs.readFileSync(sessionFilePath, 'utf-8');
+          }
+        } catch (e) {
+          // Sessions dir not accessible
+        }
+      }
+
+      if (!sessionContent) {
+        console.error(`[skill-wall] Session file not found for: ${sessionId}`);
+        return;
+      }
+
+      console.error(`[skill-wall] Read session file: ${sessionFilePath}`);
+
+      // Step 3: Parse JSONL and analyze conversation
+      const messages = parseSessionJsonl(sessionContent);
+      if (messages.length === 0) {
+        console.error('[skill-wall] No messages found in session');
+        return;
+      }
+
+      console.error(`[skill-wall] Found ${messages.length} messages, analyzing patterns...`);
+
+      // Step 4: Analyze patterns in conversation
+      const patterns = analyzeConversationPatterns(messages);
+
+      if (patterns.length === 0) {
+        console.error('[skill-wall] No值得沉淀 patterns found, skipping skill generation');
+        return;
+      }
+
+      console.error(`[skill-wall] Found ${patterns.length} patterns worth documenting`);
+
+      // Step 5: Create generated-skills directory and write skill drafts
+      const pluginDir = path.dirname(require.resolve('./handler.js'));
+      const outputDir = path.join(pluginDir, 'generated-skills');
+
+      try {
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
+        }
+      } catch (e) {
+        console.error(`[skill-wall] Failed to create output dir: ${e.message}`);
+        return;
+      }
+
+      for (const pattern of patterns) {
+        const filename = `skill-${Date.now()}-${pattern.type}.md`;
+        const filepath = path.join(outputDir, filename);
+
+        const skillContent = generateSkillMarkdown(pattern);
+        try {
+          fs.writeFileSync(filepath, skillContent, 'utf-8');
+          console.error(`[skill-wall] Generated skill: ${filepath}`);
+        } catch (e) {
+          console.error(`[skill-wall] Failed to write skill: ${e.message}`);
+        }
+      }
     });
   },
 };
@@ -260,20 +367,52 @@ const plugin = {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract task description from event.
+ * Extract task description from event using intelligent inference.
+ * Strategy: find the longest string field that contains natural language.
  * @param {object} event
  * @returns {string|null}
  */
 function extractTaskFromEvent(event) {
-  // Try to extract from various event properties
-  const task =
-    event?.context?.task ||
-    event?.context?.currentTask ||
-    event?.task ||
-    event?.prompt ||
-    '';
+  /** @type {Array<{value: string, length: number}>} */
+  const candidates = [];
 
-  return typeof task === 'string' ? task : null;
+  // Collect all string fields from event and event.context
+  const searchIn = (obj, prefix = '') => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (typeof val === 'string' && val.trim().length > 0) {
+        candidates.push({ value: val, length: val.length });
+      } else if (typeof val === 'object' && val !== null) {
+        searchIn(val, prefix + key + '.');
+      }
+    }
+  };
+
+  searchIn(event);
+  if (event?.context) searchIn(event.context, 'context.');
+
+  // Filter out non-natural-language strings (paths, IDs, codes, etc.)
+  const filtered = candidates.filter(({ value }) => {
+    const trimmed = value.trim();
+    // Exclude pure paths (contain / or \)
+    if (trimmed.match(/^[\/\\].*[\/\\]/)) return false;
+    // Exclude pure IDs (short alphanumeric strings)
+    if (trimmed.match(/^[a-zA-Z0-9_-]{1,30}$/)) return false;
+    // Exclude strings with more code-like chars than letters
+    const alphaCount = (trimmed.match(/[a-zA-Z]/g) || []).length;
+    const totalCount = trimmed.length;
+    if (totalCount > 10 && alphaCount / totalCount < 0.5) return false;
+    // Exclude very short strings
+    if (trimmed.length < 20) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) return null;
+
+  // Return the longest one
+  filtered.sort((a, b) => b.length - a.length);
+  return filtered[0].value;
 }
 
 /**
@@ -320,17 +459,32 @@ function injectSkillsIntoEvent(event, skills) {
     })
     .join('\n\n---\n\n');
 
-  // Inject into event.bootstrapFiles if available (OpenClaw mechanism)
+  let injected = false;
+
+  // Method 1: event.bootstrapFiles (OpenClaw mechanism)
   if (event?.bootstrapFiles && Array.isArray(event.bootstrapFiles)) {
     event.bootstrapFiles.push({
       type: 'text/markdown',
       content: `# Available Skills\n\n${formattedSkills}`,
       priority: 'low',
     });
+    injected = true;
   }
 
-  // Alternative: inject into context.system or similar
-  if (event?.context) {
+  // Method 2: event.systemPrompt (if exists)
+  if (!injected && event?.systemPrompt) {
+    event.systemPrompt += `\n\n# Available Skills\n\n${formattedSkills}`;
+    injected = true;
+  }
+
+  // Method 3: event.prependContext (if exists)
+  if (!injected && event?.prependContext) {
+    event.prependContext += `\n\n# Available Skills\n\n${formattedSkills}`;
+    injected = true;
+  }
+
+  // Method 4: fallback to context.skills
+  if (!injected && event?.context) {
     if (!event.context.skills) {
       event.context.skills = [];
     }
@@ -347,3 +501,9 @@ module.exports.scanSkills = scanSkills;
 module.exports.parseFrontmatter = parseFrontmatter;
 module.exports.matchSkills = matchSkills;
 module.exports.getHermesSkillsPath = getHermesSkillsPath;
+module.exports.extractTaskFromEvent = extractTaskFromEvent;
+module.exports.calculateScore = calculateScore;
+module.exports.injectSkillsIntoEvent = injectSkillsIntoEvent;
+module.exports.parseSessionJsonl = parseSessionJsonl;
+module.exports.analyzeConversationPatterns = analyzeConversationPatterns;
+module.exports.generateSkillMarkdown = generateSkillMarkdown;

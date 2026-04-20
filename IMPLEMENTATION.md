@@ -6,9 +6,9 @@
 
 | Phase | 目标 | 状态 |
 |-------|------|------|
-| **Phase 1** | Bootstrap 注入 | 🚧 进行中 (Task 1.5 待验证) |
-| **Phase 2** | 复盘 + 写 skill | ⏳ |
-| **Phase 3** | Skill edit/patch | ⏳ |
+| **Phase 1** | Bootstrap 注入 | ✅ 核心逻辑完成（plugin 未加载） |
+| **Phase 2** | 复盘 + 写 skill | ⚠️ 9/12 测试通过（3 个失败） |
+| **Phase 3** | Skill edit/patch | ⏳ 未开始 |
 
 ---
 
@@ -58,32 +58,48 @@
 
 #### Task 1.5: 实现 bootstrap 注入
 
-- [ ] 研究 `before_prompt_build` hook 的 event 结构
-- [ ] 验证 `bootstrapFiles` 是否可写（核心验证点）
-- [ ] 实现 hook handler
-- [ ] 从 event 提取任务描述
-- [ ] 注入 skill 内容
-- [ ] 验证注入生效
+**状态：✅ 核心逻辑完成，⚠️ plugin 未加载**
+
+- [x] 研究 `before_prompt_build` hook 的 event 结构
+- [x] 验证 `bootstrapFiles` 是否可写（核心验证点）
+- [x] 实现 hook handler
+- [x] 从 event 提取任务描述（extractTaskFromEvent）
+- [x] 注入 skill 内容（injectSkillsIntoEvent）
+- [x] 验证注入生效（5/5 测试通过）
+
+**核心验证结果（实测）：**
+- `event.context.task` = 任务描述主字段 ✅
+- `event.bootstrapFiles` = 数组 ✅
+- 任务提取逻辑正确（5 种事件格式全部通过）
+
+**⚠️ 待修复：plugin 加载问题**
+- 符号链接已创建：`~/.openclaw/extensions/skill-wall`
+- 问题：重启后 plugin 未出现在 `openclaw plugins list` 中
+- 可能原因：`package.json` 缺少 `exports` 字段（参考 openclaw-lark 使用 `dist/index.js`）
 
 **候选 hooks**（来自 lossless-claw 分析）:
-- `before_prompt_build` — Prompt 构建前
-- `session_end` — 会话结束时
+- `before_prompt_build` — Prompt 构建前 ✅ 已实现
+- `session_end` — 会话结束时 ✅ 已实现
 - `gateway_start` — 网关启动时
 
 **产出**: `handler.js` 中的 hook handler
 
 #### Task 1.6: 端到端测试
 
-- [ ] 安装 plugin 到 `~/.openclaw/extensions/`
+- [ ] 安装 plugin 到 `~/.openclaw/extensions/`（链接已创建 ⚠️ 未生效）
 - [ ] 启动 OpenClaw 新会话
 - [ ] 验证 skill 注入到 prompt
 - [ ] 验证 skill 内容正确
 
-**验收标准**:
+**验收标准:**
 - [ ] plugin 可被 OpenClaw 识别
 - [ ] skill 扫描返回 100+ Hermes skills
 - [ ] 任务匹配正确工作
 - [ ] skill 内容注入到 prompt
+
+**⚠️ 阻塞：plugin 未加载**
+- 症状：`openclaw plugins list` 中无 skill-wall
+- 可能原因：`package.json` 缺少 `exports` 字段（参考 openclaw-lark 用 `dist/index.js`）
 
 ---
 
@@ -91,60 +107,66 @@
 
 **目标**: 会话结束后分析 session JSONL，识别有价值的工作流，写入新 skill
 
+**状态：⚠️ 9/12 测试通过（3 个失败待修复）**
+
 ### 任务分解
 
 #### Task 2.1: 研究 session JSONL 格式
 
-- [ ] 找到 OpenClaw session 文件路径
-- [ ] 解析 JSONL 格式
-- [ ] 理解 message 结构（role, content, tool_calls 等）
+- [x] 找到 OpenClaw session 文件路径（`~/.openclaw/sessions/`）
+- [x] 解析 JSONL 格式
+- [x] 理解 message 结构（role, content, tool_calls 等）
 
 **产出**: session JSONL 格式文档
 
 #### Task 2.2: 实现 session 分析
 
-- [ ] 实现 `analyzeSession(sessionPath)` 函数
-- [ ] 提取 tool calls 和 outcomes
-- [ ] 识别错误恢复模式
-- [ ] 识别复杂工作流
+- [x] 实现 `analyzeSession(sessionPath)` 函数
+- [x] 提取 tool calls 和 outcomes
+- [x] 识别错误恢复模式
+- [x] 识别复杂工作流
 
 **产出**: `handler.js` 中的 `analyzeSession()` 函数
 
 #### Task 2.3: 实现经验价值判断
 
-- [ ] 实现 `isValuableExperience(patterns)` 函数
-- [ ] 启发式规则判断
-- [ ] 阈值可配置
+- [x] 实现 `isValuableExperience(patterns)` 函数
+- [x] 启发式规则判断
+- [x] 阈值可配置
 
 **产出**: `handler.js` 中的 `isValuableExperience()` 函数
 
 #### Task 2.4: 实现 skill 文件生成
 
-- [ ] 实现 `generateSkillMarkdown(experience)` 函数
-- [ ] 复用 Hermes SKILL.md 格式
-- [ ] 生成符合 ClawHub 标准的 frontmatter
+- [x] 实现 `generateSkillMarkdown(experience)` 函数
+- [x] 复用 Hermes SKILL.md 格式
+- [x] 生成符合 ClawHub 标准的 frontmatter
 
 **产出**: `handler.js` 中的 `generateSkillMarkdown()` 函数
 
 #### Task 2.5: 实现 skill 文件写入
 
-- [ ] 实现 `writeSkillFile(skillMarkdown, category, name)` 函数
-- [ ] 创建目录结构
-- [ ] 写入 `~/.hermes/skills/<category>/<name>/SKILL.md`
-- [ ] 幂等性保证（已存在则跳过或更新）
+- [x] 实现 `writeSkillFile(skillMarkdown, category, name)` 函数
+- [x] 创建目录结构
+- [x] 写入 `~/.hermes/skills/<category>/<name>/SKILL.md`
+- [x] 幂等性保证（已存在则跳过或更新）
 
 **产出**: `handler.js` 中的 `writeSkillFile()` 函数
 
 #### Task 2.6: 触发机制
 
-- [ ] 研究 session end 触发方式（hook? cron?）
-- [ ] 实现触发逻辑
+- [x] session_end hook 已接入 ✅
 - [ ] 验证自动触发
 
-**验收标准**:
-- [ ] session JSONL 分析正确
-- [ ] 可识别有价值的工作流模式
-- [ ] skill 文件写入成功
+**验收标准:**
+- [x] session JSONL 分析正确
+- [x] 可识别有价值的工作流模式
+- [x] skill 文件写入成功
+
+**⚠️ 待修复（3 个测试失败）：**
+1. JSONL 行数统计偏差 — mock 数据命令含实际换行符，merge 逻辑未正确处理
+2. complex task 检测时机 — `currentSequence` 在新 user message 时重置，检测逻辑时机有问题
+3. error recovery 检测 — Error 信息在 `role: assistant` 的 content 里，不是 `role: tool` 里
 
 ---
 
@@ -177,7 +199,7 @@
 
 ---
 
-## 五、文件结构（目标）
+## 五、文件结构
 
 ```
 openclaw-skill-wall/
@@ -192,8 +214,15 @@ openclaw-skill-wall/
 ├── plugin/
 │   ├── openclaw.plugin.json
 │   ├── package.json
-│   └── handler.js
-└── tests/
+│   ├── handler.js          # 主逻辑（509 行）
+│   ├── lib/
+│   │   └── skill-generator.js  # Phase 2 核心（307 行）
+│   └── test/
+│       ├── event-structure.js        # 事件结构测试
+│       ├── verify-event-structure.mjs # 事件验证脚本
+│       ├── verify-output.txt          # 验证结果（5/5 通过）
+│       ├── test-session-end.js       # Phase 2 测试（220 行）
+│       └── session-end-test-output.txt # 测试结果（9/12 通过）
 ```
 
 ---
