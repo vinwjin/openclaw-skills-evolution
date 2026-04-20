@@ -1,0 +1,11 @@
+{
+  "name": "skill-wall",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin that replicates Hermes Agent's self-evolving skill system — scans ~/.hermes/skills/, matches tasks, and injects relevant skills into prompts",
+  "main": "handler.js",
+  "license": "MIT",
+  "keywords": ["openclaw", "openclaw-plugin", "skills", "hermes", "skill-injection"],
+  "openclaw": {
+    "extensions": ["./handler.js"]
+  }
+}

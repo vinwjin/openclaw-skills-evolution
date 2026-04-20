@@ -1,0 +1,10 @@
+{
+  "owner": "PLACEHOLDER_OWNER_ID",
+  "slug": "skill-wall",
+  "displayName": "Skill Wall",
+  "latest": {
+    "version": "0.1.0",
+    "publishedAt": 1745200000000,
+    "commit": "https://github.com/PLACEHOLDER/repo/commit/PLACEHOLDER"
+  }
+}
