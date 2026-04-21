@@ -1,4 +1,4 @@
-# 发布指南
+# ClawHub 发布指南
 
 ---
 
@@ -28,7 +28,7 @@
 
 ## 二、安全审查清单
 
-详见 [SECURITY.md](SECURITY.md)
+详见 [security.md](../guides/security.md)
 
 - [ ] API keys / tokens / passwords 不硬编码
 - [ ] 用户凭证脱敏

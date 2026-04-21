@@ -16,22 +16,23 @@ const plugin = require('../handler.js');
 const { parseSessionJsonl, analyzeConversationPatterns, generateSkillMarkdown } = plugin;
 
 // Test data: simulated session JSONL content
-const mockSessionJsonl = `{"role":"user","content":"我需要实现一个功能，把字符串反转"}
-{"role":"assistant","content":"好的，我来帮你实现这个功能。","toolCalls":[{"name":"Write","arguments":{"file_path":"/tmp/reverse.js","content":"function reverse(s) { return s.split('').reverse().join(''); }"}}]}
-{"role":"tool","content":"File written successfully"}
-{"role":"assistant","content":"文件已创建。让我运行测试验证。","toolCalls":[{"name":"Bash","arguments":{"command":"node /tmp/reverse.js"}}]}
-{"role":"tool","content":"Error: Cannot find module"}
-{\"role\":\"assistant\",\"content\":\"出错了，让我用不同的方式运行。\",\"toolCalls\":[{\"name\":\"Bash\",\"arguments\":{\"command\":\"node -e \\\\\"console.log('test'.split('').reverse().join(''))\\\\\"\"}}]}
-{"role":"tool","content":"tset"}
-{"role":"assistant","content":"成功了！字符串反转正常工作。"}
-{"role":"user","content":"记住以后用 -e 参数运行单行 node 代码"}
-{"role":"assistant","content":"好的，我记住了！"}
-{"role":"user","content":"现在帮我实现一个计算器功能"}
-{"role":"assistant","content":"好的，我来创建计算器。","toolCalls":[{"name":"Write","arguments":{"file_path":"/tmp/calc.js","content":"const calc = (a, op, b) => { switch(op) { case '+': return a+b; case '-': return a-b; case '*': return a*b; case '/': return a/b; } };"}},{"name":"Bash","arguments":{"command":"node -e \"const c = require('/tmp/calc.js'); console.log(c.calc(5, '+', 3))\""}},{"name":"Read","arguments":{"file_path":"/tmp/calc.js"}},{"name":"Edit","arguments":{"file_path":"/tmp/calc.js","old_string":"const calc","new_string":"function calc"}}]}
-{"role":"tool","content":"File written successfully"}
-{"role":"tool","content":"8"}
-{"role":"tool","content":"File content verified"}
-{"role":"assistant","content":"计算器完成！4个工具调用成功完成复杂任务。"}`;
+const mockSessionJsonl = `{"role": "user", "content": "我需要实现一个功能，把字符串反转"}
+{"role": "assistant", "content": "好的，我来帮你实现这个功能。", "toolCalls": [{"name": "Write", "arguments": {"file_path": "/tmp/reverse.js", "content": "function reverse(s) { return s.split('').reverse().join(''); }"}}]}
+{"role": "tool", "content": "File written successfully"}
+{"role": "assistant", "content": "文件已创建。让我运行测试验证。", "toolCalls": [{"name": "Bash", "arguments": {"command": "node /tmp/reverse.js"}}]}
+{"role": "tool", "content": "Error: Cannot find module"}
+{"role": "assistant", "content": "出错了，让我用不同的方式运行。", "toolCalls": [{"name": "Bash", "arguments": {"command": "node -e \\"console.log('test'.split('').reverse().join(''))\\""}}]}
+{"role": "tool", "content": "tset"}
+{"role": "assistant", "content": "成功了！字符串反转正常工作。"}
+{"role": "user", "content": "记住以后用 -e 参数运行单行 node 代码"}
+{"role": "assistant", "content": "好的，我记住了！"}
+{"role": "user", "content": "现在帮我实现一个计算器功能"}
+{"role": "assistant", "content": "好的，我来创建计算器。", "toolCalls": [{"name": "Write", "arguments": {"file_path": "/tmp/calc.js", "content": "const calc = (a, op, b) => { switch(op) { case '+': return a+b; case '-': return a-b; case '*': return a*b; case '/': return a/b; } };"}}, {"name": "Bash", "arguments": {"command": "node -e \\"const c = require('/tmp/calc.js'); console.log(c.calc(5, '+', 3))\\""}}, {"name": "Read", "arguments": {"file_path": "/tmp/calc.js"}}, {"name": "Edit", "arguments": {"file_path": "/tmp/calc.js", "old_string": "const calc", "new_string": "function calc"}}]}
+{"role": "tool", "content": "File written successfully"}
+{"role": "tool", "content": "8"}
+{"role": "tool", "content": "File content verified"}
+{"role": "assistant", "content": "计算器完成！4个工具调用成功完成复杂任务。"}
+`;
 
 // Test results collector
 const results = [];

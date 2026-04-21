@@ -1,5 +1,9 @@
 {
   "id": "skill-wall",
-  "kind": "general",
-  "skills": ["skill-wall"]
+  "main": "handler.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
 }

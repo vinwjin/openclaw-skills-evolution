@@ -1,6 +1,6 @@
 ---
 name: skill-wall
-description: OpenClaw plugin that scans ~/.hermes/skills/, matches tasks, and injects relevant skills into prompts for Hermes-compatible workflow automation
+description: OpenClaw plugin that scans ~/.openclaw/workspace/skills/, matches tasks, and injects relevant skills into prompts for OpenClaw agent workflow automation
 version: 0.1.0
 author: Skill Wall
 license: MIT
@@ -18,7 +18,7 @@ Use this skill when the task involves the `skill-wall` OpenClaw plugin.
 
 Skill Wall replicates Hermes Agent's self-evolving skill system on OpenClaw:
 
-1. **Scans** `~/.hermes/skills/` for all `SKILL.md` files
+1. **Scans** `~/.openclaw/workspace/skills/` for all `SKILL.md` files
 2. **Matches** relevant skills to current task using weighted keyword matching
 3. **Injects** matched skill content into the prompt context
 
@@ -39,7 +39,7 @@ OpenClaw Agent (Node.js)
     ▼ before_prompt_build hook
 ~/.openclaw/extensions/skill-wall/
     │
-    ▼ scan ~/.hermes/skills/*.SKILL.md
+    ▼ scan ~/.openclaw/workspace/skills/*.SKILL.md
     │
     ▼ match task → weighted keywords
     │

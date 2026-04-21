@@ -6,6 +6,46 @@
  */
 
 /**
+ * Parse YAML frontmatter from markdown content.
+ * @param {string} content - Full file content
+ * @returns {{frontmatter: object, body: string}}
+ */
+function parseFrontmatter(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  if (!match) {
+    return { frontmatter: {}, body: content };
+  }
+
+  const yamlStr = match[1];
+  const body = match[2];
+  const frontmatter = {};
+
+  for (const line of yamlStr.split('\n')) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    const key = line.slice(0, colonIdx).trim();
+    const value = line.slice(colonIdx + 1).trim();
+
+    if (key === 'metadata') {
+      continue;
+    }
+
+    if (value === '' || value === null) {
+      frontmatter[key] = null;
+    } else if (value.startsWith('[') && value.endsWith(']')) {
+      frontmatter[key] = value
+        .slice(1, -1)
+        .split(',')
+        .map((s) => s.trim());
+    } else {
+      frontmatter[key] = value;
+    }
+  }
+
+  return { frontmatter, body };
+}
+
+/**
  * Parse session JSONL content into an array of message objects.
  * @param {string} jsonlContent - Raw JSONL content
  * @returns {Array} Array of parsed message objects
@@ -19,33 +59,44 @@ function parseSessionJsonl(jsonlContent) {
   const lines = jsonlContent.split('\n');
   let i = 0;
 
+  function tryParse(str) {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return null;
+    }
+  }
+
   while (i < lines.length) {
-    const trimmed = lines[i].trim();
+    const line = lines[i];
+    const trimmed = line.trim();
     if (!trimmed) { i++; continue; }
 
     // Try to parse current line
-    try {
-      messages.push(JSON.parse(trimmed));
+    let parsed = tryParse(trimmed);
+    if (parsed) {
+      messages.push(parsed);
       i++;
-    } catch {
-      // May be multi-line JSON, try merging with subsequent lines
-      let j = i + 1;
-      let merged = trimmed;
-      while (j < lines.length) {
-        merged += '\n' + lines[j];
-        try {
-          const parsed = JSON.parse(merged);
-          messages.push(parsed);
-          i = j + 1;
-          break;
-        } catch {
-          j++;
-        }
+      continue;
+    }
+
+    // Multi-line JSON: keep merging until we get valid JSON or run out of lines
+    let merged = trimmed;
+    let j = i + 1;
+    let found = false;
+    while (j < lines.length) {
+      merged += '\n' + lines[j];
+      parsed = tryParse(merged);
+      if (parsed) {
+        messages.push(parsed);
+        i = j + 1;
+        found = true;
+        break;
       }
-      if (j >= lines.length) {
-        // Cannot merge, skip this line
-        i++;
-      }
+      j++;
+    }
+    if (!found) {
+      i++;
     }
   }
 
@@ -53,7 +104,7 @@ function parseSessionJsonl(jsonlContent) {
 }
 
 /**
- * Analyze conversation messages to identify patterns worth documenting.
+ * Analyze conversation patterns from messages.
  * @param {Array} messages - Array of message objects from session
  * @returns {Array} Array of pattern objects worth documenting
  */
@@ -302,7 +353,8 @@ metadata:
 }
 
 module.exports = {
+  parseFrontmatter,
   parseSessionJsonl,
   analyzeConversationPatterns,
-  generateSkillMarkdown
+  generateSkillMarkdown,
 };
