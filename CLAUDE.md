@@ -1,109 +1,112 @@
-# OpenClaw Skill Wall - CLAUDE.md
-
-> 项目工作辅助文档
-
----
+# OpenClaw Skills Evolution — CLAUDE.md
 
 ## 项目概述
+**目标**：对标 Hermes Skills 自我进化机制，让 OpenClaw Agent 在任务中主动发现值得固化的经验 → 调用 skill_manage 沉淀为 SKILL.md。
 
-在 OpenClaw 上复刻 Hermes 自进化技能系统。
+**v0.3 设计**：精简插件，只注册三个工具，不做自动分析。
+- `skill_manage`：创建/编辑/补丁/删除 SKILL.md
+- `skill_list`：列出所有 Skills
+- `skill_search`：关键词搜索 Skills
 
-**技术形态**: OpenClaw Plugin（Node.js）
-
-**架构对齐**（参考 openclaw-lark）:
-- Skills 由 OpenClaw 原生发现（`~/.openclaw/workspace/skills/`）
-- Plugin 负责：Skill System Prompt 注入 + skill_editor 工具 + session 分析
-- Agent 看到的是"前台可见"的 skill 系统，不是后台偷偷注入
-
-**三阶段**:
-1. Phase 1: Skill System Prompt 注入 ✅ 改为前台可见方式
-2. Phase 2: 复盘 + 生成 skill ✅ 13/13 测试通过
-3. Phase 3: Skill edit/patch ✅ 全部完成（editSkill + patchSkill + registerTool）
+**无 Hook，无 MiniMax，无自动沉淀。** 纯工具模式，经验沉淀全靠 Agent 主动判断。
 
 ---
 
-## 当前阻塞问题
+## 技术规格
 
-无阻塞。
-
-**plugin 状态**（`openclaw plugins list`）：
-- skill-wall ✅ 已安装，已启用，`loaded` 状态
-- 安装路径：`~/.openclaw/extensions/skill-wall/`（cp -r 复制，不使用 symlink）
-
----
-
-## 技术约束
-
-1. **不能修改 OpenClaw 源码** — 必须通过 Plugin 机制
-2. **语言隔离** — Hermes (Python) ↔ OpenClaw (Node.js)
-3. **安全第一** — 复用 Hermes skill 格式
-
----
-
-## Karpathy 编程原则
-
-> 来源: [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)
-
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
+### Skills 存储路径
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+~/.openclaw/workspace/skills/{safeName}/SKILL.md
+```
+- `safeName`：将 Skill name 转为安全的目录名（小写、连字符、移除特殊字符）
+- 示例：`My Skill 123` → `my-skill-123`
+
+### SKILL.md 格式（YAML frontmatter + Markdown）
+```yaml
+---
+name: example-skill
+description: 这是一个示例 Skill
+triggers:
+  - 当做某事时
+tags:
+  - 标签1
+  - 标签2
+version: 1.0.0
+author: openclaw
+---
+
+# Skill 内容
+正文...
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+### skill_manage 参数
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | string | 是 | create / edit / patch / delete |
+| name | string | 是 | Skill 名称 |
+| content | string | create/edit 必填 | 完整 SKILL.md 内容（含 frontmatter） |
+| old_string | string | patch 必填 | 要替换的文本 |
+| new_string | string | patch 选填 | 替换文本，空=删除 |
+
+### safeName 规则
+```js
+function toSafeName(name) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+```
+- 全小写
+- 空格/特殊字符 → 连字符
+- 连续连字符压缩为一个
+- 前后连字符去除
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+## 文件结构
+```
+openclaw-skills-evolution/
+├── CLAUDE.md
+├── README.md
+├── _meta.json                  # version: 0.3.0
+├── plugin/
+│   ├── index.js                # 主入口（注册三个工具）
+│   ├── openclaw.plugin.json    # { id, name, configSchema }
+│   └── package.json            # { openclaw: { extensions: ["./index.js"] } }
+└── lib/
+    ├── skill-loader.js         # 扫描 workspace/skills/*/SKILL.md
+    ├── skill-saver.js          # 写入 SKILL.md 到 safeName 目录
+    └── skill-index.js          # 关键词索引 + TF-IDF 搜索
+```
+
+---
+
+## 状态
+
+| 组件 | 状态 |
+|------|------|
+| `plugin/index.js` | ✅ 完成 |
+| `plugin/openclaw.plugin.json` | ✅ 完成 |
+| `plugin/package.json` | ✅ 完成 |
+| `lib/skill-loader.js` | ✅ 完成 |
+| `lib/skill-saver.js` | ✅ 完成 |
+| `lib/skill-index.js` | ✅ 完成 |
+| README.md | ✅ 完成 |
+| 源文件 → 安装目录同步 | ✅ 完成 |
+| openclaw.json 配置 | ✅ 完成 |
+| Gateway 插件加载 | ✅ v0.3.0 loaded |
+| 实际验证（自发沉淀测试） | ✅ 通过（windows-path + wsl-windows-path） |
+
+---
+
+## 已验证功能
+
+### 测试 1：提示创建
+- 任务：提示"整理 Windows 路径规则并沉淀为 Skill"
+- 结果：✅ windows-path Skill 创建成功
+
+### 测试 2：自发沉淀（无提示）
+- 任务：调研 WSL PATH 冲突问题，**不提示沉淀**
+- 结果：✅ Agent 自发创建 wsl-windows-path Skill
+- 验证：两个 Skill 均含正确 frontmatter + 正文内容

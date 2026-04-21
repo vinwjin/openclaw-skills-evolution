@@ -1,6 +1,9 @@
 {
-  "id": "skill-wall",
-  "main": "handler.js",
+  "id": "skills-evolution",
+  "kind": "extension",
+  "name": "Skills Evolution",
+  "version": "0.3.0",
+  "description": "Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
