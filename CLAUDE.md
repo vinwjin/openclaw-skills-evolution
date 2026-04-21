@@ -1,52 +1,74 @@
 # OpenClaw Skills Evolution — CLAUDE.md
 
 ## 项目概述
-**目标**：对标 Hermes Skills 自我进化机制，让 OpenClaw Agent 在任务中主动发现值得固化的经验 → 调用 skill_manage 沉淀为 SKILL.md。
+**目标**：对标 Hermes Skills 自我进化机制，实现双轨沉淀：
 
-**v0.3 设计**：精简插件，只注册三个工具，不做自动分析。
-- `skill_manage`：创建/编辑/补丁/删除 SKILL.md
-- `skill_list`：列出所有 Skills
-- `skill_search`：关键词搜索 Skills
+1. **轨道1**：任务过程中 Agent 主动调用 skill_manage 沉淀经验
+2. **轨道2**：session 结束时自动审视 → Agent 决定是否创建 skill
 
-**无 Hook，无 MiniMax，无自动沉淀。** 纯工具模式，经验沉淀全靠 Agent 主动判断。
+**v0.4 设计**：在 v0.3 基础上加入 session_end + before_prompt_build hooks，实现自动审视机会。
+
+---
+
+## 双轨机制详解
+
+### 轨道1：主动沉淀（工具模式）
+Agent 在任务中发现值得复用的模式 → 主动调用 `skill_manage create` → 写入 `~/.openclaw/workspace/skills/{safeName}/SKILL.md`
+
+### 轨道2：自动审视（Hook 模式）
+```
+session_end
+  → SessionSummarizer 读取 session JSONL
+  → 生成摘要（topic, tools, keyFindings）
+  → 存入 sessionRegistry（Map: sessionId → summary）
+
+before_prompt_build
+  → 检查 sessionRegistry 是否有待审视 session
+  → 注入审视提示到 system prompt
+  → 清除注册表条目
+  → Agent 在下一个 turn 决定是否创建 skill
+```
+
+**关键**：全程 Agent 自主决策，不做全自动沉淀。Hook 只是创造一次审视机会。
 
 ---
 
 ## 技术规格
 
-### Skills 存储路径
+### Hooks 注册
+```js
+api.on('session_end', async (event, ctx) => { ... })
+api.on('before_prompt_build', async (event, ctx) => { ... })
+```
+
+### sessionRegistry 全局注册表
+```js
+const sessionRegistry = new Map();
+// {
+//   sessionId: { topic, tools, keyFindings, timestamp }
+// }
+```
+
+### session-summarizer.js
+- 读取 session JSONL
+- 提取：topic（用户首条消息前80字符）、tools（用到的工具）、keyFindings（代码片段）
+- 返回 `{ topic, tools, keyFindings }`
+
+### buildReviewPrompt(entry)
+在 system prompt 后追加审视提示：
+```
+## 经验审视机会
+上一个 session 主题：{topic}
+工具: {tools}
+如果这个 session 中发现了值得复用的解决方案...考虑调用 skill_manage create 沉淀为 SKILL.md。
+```
+
+---
+
+## Skills 存储路径
 ```
 ~/.openclaw/workspace/skills/{safeName}/SKILL.md
 ```
-- `safeName`：将 Skill name 转为安全的目录名（小写、连字符、移除特殊字符）
-- 示例：`My Skill 123` → `my-skill-123`
-
-### SKILL.md 格式（YAML frontmatter + Markdown）
-```yaml
----
-name: example-skill
-description: 这是一个示例 Skill
-triggers:
-  - 当做某事时
-tags:
-  - 标签1
-  - 标签2
-version: 1.0.0
-author: openclaw
----
-
-# Skill 内容
-正文...
-```
-
-### skill_manage 参数
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| action | string | 是 | create / edit / patch / delete |
-| name | string | 是 | Skill 名称 |
-| content | string | create/edit 必填 | 完整 SKILL.md 内容（含 frontmatter） |
-| old_string | string | patch 必填 | 要替换的文本 |
-| new_string | string | patch 选填 | 替换文本，空=删除 |
 
 ### safeName 规则
 ```js
@@ -57,10 +79,23 @@ function toSafeName(name) {
     .replace(/^-+|-+$/g, '');
 }
 ```
-- 全小写
-- 空格/特殊字符 → 连字符
-- 连续连字符压缩为一个
-- 前后连字符去除
+
+### SKILL.md 格式
+```yaml
+---
+name: example-skill
+description: 这是一个示例 Skill
+triggers:
+  - 当做某事时
+tags:
+  - 标签1
+version: 1.0.0
+author: openclaw
+---
+
+# Skill 内容
+正文...
+```
 
 ---
 
@@ -69,15 +104,15 @@ function toSafeName(name) {
 openclaw-skills-evolution/
 ├── CLAUDE.md
 ├── README.md
-├── _meta.json                  # version: 0.3.0
-├── plugin/
-│   ├── index.js                # 主入口（注册三个工具）
-│   ├── openclaw.plugin.json    # { id, name, configSchema }
-│   └── package.json            # { openclaw: { extensions: ["./index.js"] } }
+├── _meta.json                  # version: 0.4.0
+├── index.js                    # 主入口（注册工具 + hooks）
+├── openclaw.plugin.json        # { id, name, configSchema }
+├── package.json               # { openclaw: { extensions: ["./index.js"] } }
 └── lib/
     ├── skill-loader.js         # 扫描 workspace/skills/*/SKILL.md
-    ├── skill-saver.js          # 写入 SKILL.md 到 safeName 目录
-    └── skill-index.js          # 关键词索引 + TF-IDF 搜索
+    ├── skill-saver.js          # 写入 SKILL.md
+    ├── skill-index.js          # 关键词索引 + TF-IDF 搜索
+    └── session-summarizer.js   # session JSONL 摘要提取
 ```
 
 ---
@@ -87,20 +122,20 @@ openclaw-skills-evolution/
 | 组件 | 状态 |
 |------|------|
 | `plugin/index.js` | ✅ 完成 |
-| `plugin/openclaw.plugin.json` | ✅ 完成 |
-| `plugin/package.json` | ✅ 完成 |
+| `lib/session-summarizer.js` | ✅ 完成 |
 | `lib/skill-loader.js` | ✅ 完成 |
 | `lib/skill-saver.js` | ✅ 完成 |
 | `lib/skill-index.js` | ✅ 完成 |
+| `plugin/openclaw.plugin.json` | ✅ 完成 |
+| `plugin/package.json` | ✅ 完成 |
 | README.md | ✅ 完成 |
-| 源文件 → 安装目录同步 | ✅ 完成 |
-| openclaw.json 配置 | ✅ 完成 |
-| Gateway 插件加载 | ✅ v0.3.0 loaded |
-| 实际验证（自发沉淀测试） | ✅ 通过（windows-path + wsl-windows-path） |
+| 安装目录同步 | ⏳ 待做 |
+| Gateway 重启 | ⏳ 待做 |
+| 实际验证（双轨测试） | ⏳ 待做 |
 
 ---
 
-## 已验证功能
+## 已验证功能（v0.3）
 
 ### 测试 1：提示创建
 - 任务：提示"整理 Windows 路径规则并沉淀为 Skill"
@@ -109,4 +144,12 @@ openclaw-skills-evolution/
 ### 测试 2：自发沉淀（无提示）
 - 任务：调研 WSL PATH 冲突问题，**不提示沉淀**
 - 结果：✅ Agent 自发创建 wsl-windows-path Skill
-- 验证：两个 Skill 均含正确 frontmatter + 正文内容
+
+---
+
+## 待测试（v0.4）
+
+### 测试 3：轨道2 — session_end 自动审视
+- 触发：session 结束时
+- 预期：下一个 turn 开头有审视提示
+- 预期：Agent 决定是否创建 skill

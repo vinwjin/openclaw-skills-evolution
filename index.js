@@ -1,18 +1,27 @@
 /**
  * OpenClaw Skills Evolution Plugin
- * v0.3: 对标 Hermes Skills 自我进化机制。
+ * v0.4: 双轨沉淀机制
  *
- * 核心功能：注册三个工具，让 OpenClaw Agent 在任务中主动沉淀经验。
- * - skill_manage: 创建/编辑/补丁/删除 SKILL.md
- * - skill_list: 列出所有 Skills
- * - skill_search: 关键词搜索 Skills
+ * 轨道1：Agent 主动调用 skill_manage 沉淀（工具模式）
+ * 轨道2：session_end 时自动审视 → before_prompt_build 注入机会 → Agent 决定是否创建 skill
  *
- * Skills 存储路径：~/.openclaw/workspace/skills/{safeName}/SKILL.md
+ * 核心思路：
+ * - session_end hook 只做一件事：读取 session JSONL，生成摘要，存入全局注册表
+ * - before_prompt_build hook 检查是否有待审视的 session，有则注入简短提示
+ * - 注入的提示让 Agent 在下一个 turn 开头有机会主动调用 skill_manage
+ * - 全程 Agent 自主决策，不做全自动沉淀
  */
 
 const { SkillLoader } = require('./lib/skill-loader');
 const { SkillSaver } = require('./lib/skill-saver');
 const { SkillIndex } = require('./lib/skill-index');
+const { SessionSummarizer } = require('./lib/session-summarizer');
+
+// ============================================================================
+// 全局 session 摘要注册表
+// { sessionId: { topic, tools, keyFindings, timestamp } }
+// ============================================================================
+const sessionRegistry = new Map();
 
 // ============================================================================
 // Plugin Definition
@@ -21,7 +30,7 @@ const { SkillIndex } = require('./lib/skill-index');
 const plugin = {
   id: 'skills-evolution',
   name: 'Skills Evolution',
-  description: 'Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md',
+  description: 'Skills 自我进化系统 — 双轨沉淀经验为可复用 SKILL.md',
 
   configSchema: {
     type: 'object',
@@ -31,7 +40,63 @@ const plugin = {
 
   register(api) {
     // -------------------------------------------------------------------------
-    // Tool: skill_manage
+    // 轨道2-A：session_end — 提取 session 摘要
+    // -------------------------------------------------------------------------
+    api.on('session_end', async (event, ctx) => {
+      const sessionId = event.sessionId || event.session?.id;
+      const sessionFile = event.sessionFile;
+
+      if (!sessionFile || !sessionId) return;
+
+      // 读取并摘要 session
+      const summarizer = new SessionSummarizer();
+      const summary = await summarizer.summarize(sessionFile);
+      if (!summary) return;
+
+      // 存入注册表，标记为待审视
+      sessionRegistry.set(sessionId, {
+        ...summary,
+        timestamp: Date.now()
+      });
+
+      console.error(`[skills-evolution] session_end: ${sessionId} — ${summary.topic}`);
+    });
+
+    // -------------------------------------------------------------------------
+    // 轨道2-B：before_prompt_build — 注入审视机会
+    // 只在有待审视 session 时注入，注入后清除标记
+    // -------------------------------------------------------------------------
+    api.on('before_prompt_build', async (event, ctx) => {
+      const sessionId = event.session?.id;
+      if (!sessionId) return;
+
+      const entry = sessionRegistry.get(sessionId);
+      if (!entry) return;
+
+      // 注入审视提示（作为 system prompt 的追加内容）
+      // 这让 Agent 在下一个 turn 开头有机会决定是否创建 skill
+      const reviewPrompt = buildReviewPrompt(entry);
+
+      // 追加到 hints 或 messages 中，让 OpenClaw 在构建 prompt 时包含它
+      if (event.hints) {
+        event.hints.reviewPrompt = reviewPrompt;
+      }
+      if (event.messages) {
+        // 在最后一条 system 消息后追加审视提示
+        const sysIdx = event.messages.map(m => m.role).lastIndexOf('system');
+        if (sysIdx !== -1) {
+          const sysMsg = event.messages[sysIdx];
+          const existingText = sysMsg.content?.[0]?.text || sysMsg.text || '';
+          sysMsg.content = [{ type: 'text', text: existingText + '\n\n' + reviewPrompt }];
+        }
+      }
+
+      // 清除标记，避免重复注入
+      sessionRegistry.delete(sessionId);
+    });
+
+    // -------------------------------------------------------------------------
+    // 轨道1：三个工具注册
     // -------------------------------------------------------------------------
     api.registerTool({
       name: 'skill_manage',
@@ -79,16 +144,10 @@ const plugin = {
       }
     });
 
-    // -------------------------------------------------------------------------
-    // Tool: skill_list
-    // -------------------------------------------------------------------------
     api.registerTool({
       name: 'skill_list',
       description: '列出所有可用的 Skills，显示名称和描述。',
-      parameters: {
-        type: 'object',
-        properties: {}
-      },
+      parameters: { type: 'object', properties: {} },
 
       async execute(toolCallId, params) {
         const loader = new SkillLoader();
@@ -106,19 +165,13 @@ const plugin = {
       }
     });
 
-    // -------------------------------------------------------------------------
-    // Tool: skill_search
-    // -------------------------------------------------------------------------
     api.registerTool({
       name: 'skill_search',
       description: '在 Skills 中搜索关键词，返回匹配的 Skills 列表。',
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: '搜索关键词'
-          }
+          query: { type: 'string', description: '搜索关键词' }
         },
         required: ['query']
       },
@@ -136,7 +189,6 @@ const plugin = {
         }
 
         const results = index.search(query);
-
         if (results.length === 0) {
           return formatResult(`No skills matching "${query}"`);
         }
@@ -151,13 +203,25 @@ const plugin = {
 };
 
 // ============================================================================
-// Tool Handlers
+// Helpers
 // ============================================================================
 
+function buildReviewPrompt(entry) {
+  const { topic, tools, keyFindings } = entry;
+  const toolList = tools.length > 0 ? `工具: ${tools.join(', ')}` : '';
+
+  return `
+## 经验审视机会
+
+上一个 session 主题：**${topic}**
+${toolList}
+
+如果这个 session 中发现了值得复用的解决方案、反复出现的模式、或被纠正的错误，考虑调用 skill_manage create 沉淀为 SKILL.md。
+`;
+}
+
 async function handleCreate(name, content) {
-  if (!content) {
-    return formatError("content is required for action='create'");
-  }
+  if (!content) return formatError("content is required for action='create'");
 
   const saver = new SkillSaver();
   const workspace = getWorkspace();
@@ -171,16 +235,11 @@ async function handleCreate(name, content) {
 }
 
 async function handleEdit(name, content) {
-  if (!content) {
-    return formatError("content is required for action='edit'");
-  }
+  if (!content) return formatError("content is required for action='edit'");
 
   const workspace = getWorkspace();
   const found = await findByName(name, workspace);
-
-  if (!found) {
-    return formatError(`Skill '${name}' not found.`);
-  }
+  if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
     fs.writeFileSync(found.path, content, 'utf-8');
@@ -191,24 +250,17 @@ async function handleEdit(name, content) {
 }
 
 async function handlePatch(name, old_string, new_string) {
-  if (!old_string) {
-    return formatError("old_string is required for action='patch'");
-  }
+  if (!old_string) return formatError("old_string is required for action='patch'");
 
   const workspace = getWorkspace();
   const found = await findByName(name, workspace);
-
-  if (!found) {
-    return formatError(`Skill '${name}' not found.`);
-  }
+  if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
     let content = fs.readFileSync(found.path, 'utf-8');
-
     if (!content.includes(old_string)) {
       return formatError('old_string not found in skill content. Check whitespace.');
     }
-
     content = content.replace(old_string, new_string || '');
     fs.writeFileSync(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' patched.`);
@@ -220,10 +272,7 @@ async function handlePatch(name, old_string, new_string) {
 async function handleDelete(name) {
   const workspace = getWorkspace();
   const found = await findByName(name, workspace);
-
-  if (!found) {
-    return formatError(`Skill '${name}' not found.`);
-  }
+  if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
     fs.rmSync(found.skillDir, { recursive: true });
@@ -233,8 +282,6 @@ async function handleDelete(name) {
   }
 }
 
-// ============================================================================
-// Helpers
 // ============================================================================
 
 const fs = require('fs');
@@ -249,10 +296,7 @@ async function findByName(name, workspace) {
 
   for (const skill of loader.getLoaded()) {
     if (skill.name === name) {
-      return {
-        path: skill.path,
-        skillDir: pathDir(skill.path)
-      };
+      return { path: skill.path, skillDir: pathDir(skill.path) };
     }
   }
   return null;
