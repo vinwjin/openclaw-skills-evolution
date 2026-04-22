@@ -42,7 +42,17 @@ version: 1.0.0
 
 ## 安装
 
-### 一键安装（推荐）
+### openclaw plugin install（推荐）
+```bash
+openclaw plugin install @vinwjin/openclaw-skills-evolution
+```
+
+### npm 全局安装
+```bash
+npm install -g @vinwjin/openclaw-skills-evolution
+```
+
+### 一键安装（curl）
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vinwjin/openclaw-skills-evolution/master/install.sh | bash
 ```
@@ -68,7 +78,7 @@ systemctl --user restart openclaw-gateway.service
 ```
 index.js                   # 主入口（注册工具 + session_end/before_prompt_build hooks）
 openclaw.plugin.json       # 插件清单
-package.json               # 含 openclaw.extensions
+package.json               # 含 openclaw.install 配置
 lib/
   skill-loader.js          # 扫描 ~/.openclaw/workspace/skills/*/SKILL.md
   skill-saver.js           # 写入 SKILL.md

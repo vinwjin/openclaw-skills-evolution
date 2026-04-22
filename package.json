@@ -1,10 +1,10 @@
 {
-  "name": "openclaw-skills-evolution",
+  "name": "@vinwjin/openclaw-skills-evolution",
   "version": "0.4.4",
   "description": "Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md",
   "main": "index.js",
   "scripts": {
-    "postinstall": "bash ./scripts/postinstall.sh",
+    "postinstall": "node ./scripts/postinstall.js",
     "pack:dry-run": "npm pack --dry-run"
   },
   "engines": {
@@ -32,7 +32,15 @@
   },
   "author": "vinwjin",
   "license": "MIT",
+  "peerDependencies": {
+    "openclaw": ">=2026.1.0"
+  },
   "openclaw": {
-    "extensions": ["./index.js"]
+    "install": {
+      "entry": "index.js",
+      "config": {
+        "enabled": true
+      }
+    }
   }
 }
