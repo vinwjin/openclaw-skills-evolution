@@ -1,6 +1,6 @@
 {
   "name": "openclaw-skills-evolution",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md",
   "main": "index.js",
   "scripts": {
