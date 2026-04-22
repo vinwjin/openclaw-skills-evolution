@@ -99,7 +99,8 @@ const plugin = {
       description:
         '管理 Skills — 创建新 Skill 或更新已有 Skill。' +
         'Skills 是可重用的工作流文档，存储在 ~/.openclaw/workspace/skills/。' +
-        '当发现复杂问题的解决方案、反复出现的任务模式、或被纠正的错误时，创建 Skill。',
+        '当发现复杂问题的解决方案、反复出现的任务模式、或被纠正的错误时，创建 Skill。' +
+        "action='create' 时，content 只需提供 Markdown 正文；可选的 description、triggers、actions 会自动写入 YAML frontmatter。",
       parameters: {
         type: 'object',
         properties: {
@@ -114,7 +115,21 @@ const plugin = {
           },
           content: {
             type: 'string',
-            description: "完整 SKILL.md 内容（YAML frontmatter + Markdown）。用于 action='create' 或 'edit'。"
+            description: "Skill 内容。用于 action='create' 时传入 Markdown 正文；用于 action='edit' 时传入完整 SKILL.md（含 YAML frontmatter）。"
+          },
+          description: {
+            type: 'string',
+            description: "Skill 描述。可选；用于 action='create' 时写入 frontmatter。"
+          },
+          triggers: {
+            type: 'array',
+            items: { type: 'string' },
+            description: "Skill 触发条件列表。可选；用于 action='create' 时写入 frontmatter。"
+          },
+          actions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: "Skill 动作列表。可选；用于 action='create' 时写入 frontmatter。"
           },
           old_string: {
             type: 'string',
@@ -129,9 +144,9 @@ const plugin = {
       },
 
       async execute(toolCallId, params) {
-        const { action, name, content, old_string, new_string } = params;
+        const { action, name, content, description, triggers, actions, old_string, new_string } = params;
 
-        if (action === 'create') return handleCreate(name, content);
+        if (action === 'create') return handleCreate(name, content, { description, triggers, actions });
         if (action === 'edit') return handleEdit(name, content);
         if (action === 'patch') return handlePatch(name, old_string, new_string);
         if (action === 'delete') return handleDelete(name);
@@ -216,14 +231,30 @@ ${toolList}
 `;
 }
 
-async function handleCreate(name, content) {
+function buildSkillContent(name, body, opts = {}) {
+  const lines = ['---', `name: ${toYamlString(name)}`];
+  const { description, triggers, actions } = opts;
+
+  if (description && description.trim()) {
+    lines.push(`description: ${toYamlString(description.trim())}`);
+  }
+
+  appendYamlList(lines, 'triggers', triggers);
+  appendYamlList(lines, 'actions', actions);
+  lines.push('---', '');
+
+  const normalizedBody = body.endsWith('\n') ? body : `${body}\n`;
+  return `${lines.join('\n')}${normalizedBody}`;
+}
+
+async function handleCreate(name, content, opts = {}) {
   if (!content) return formatError("content is required for action='create'");
 
   const saver = new SkillSaver();
   const workspace = getWorkspace();
 
   try {
-    await saver.save(workspace, { name, content });
+    await saver.save(workspace, { name, content: buildSkillContent(name, content, opts) });
     return formatResult(`Skill '${name}' created successfully.`);
   } catch (e) {
     return formatError(`Failed to create skill: ${e.message}`);
@@ -304,6 +335,25 @@ function pathDir(p) {
   return p.replace(/[/\\][^/\\]+$/, '');
 }
 
+function appendYamlList(lines, key, values) {
+  if (!Array.isArray(values) || values.length === 0) return;
+
+  const items = values
+    .filter(value => typeof value === 'string' && value.trim())
+    .map(value => value.trim());
+
+  if (items.length === 0) return;
+
+  lines.push(`${key}:`);
+  for (const item of items) {
+    lines.push(`  - ${toYamlString(item)}`);
+  }
+}
+
+function toYamlString(value) {
+  return JSON.stringify(String(value));
+}
+
 function parseSkillContent(skill) {
   const frontmatter = skill.frontmatter || {};
   return {
@@ -326,3 +376,4 @@ function formatError(error) {
 }
 
 module.exports = plugin;
+module.exports.buildSkillContent = buildSkillContent;

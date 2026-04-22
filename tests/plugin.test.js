@@ -5,13 +5,16 @@
 
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 import { SkillIndex } from '../lib/skill-index.js';
 import { SkillLoader } from '../lib/skill-loader.js';
 import { SkillSaver } from '../lib/skill-saver.js';
 import { SessionSummarizer } from '../lib/session-summarizer.js';
+const plugin = require('../index.js');
 
 // ============================================================================
 // Helpers
@@ -220,6 +223,57 @@ console.log('\n[SkillSaver]');
     rmrf(dir);
     if (exists) pass('save creates skill directory and file');
     else fail('save creates skill directory and file', `file not found: ${result.filePath}`);
+  }
+}
+
+// ============================================================================
+// skill_manage create
+// ============================================================================
+
+console.log('\n[skill_manage create]');
+{
+  const registeredTools = new Map();
+  plugin.register({
+    on() {},
+    registerTool(tool) {
+      registeredTools.set(tool.name, tool);
+    }
+  });
+
+  const skillManage = registeredTools.get('skill_manage');
+  const tmpHome = `/tmp/se-home-${process.pid}`;
+  const workspace = path.join(tmpHome, '.openclaw', 'workspace');
+  const skillPath = path.join(workspace, 'skills', 'release-checklist', 'SKILL.md');
+  const previousHome = process.env.HOME;
+
+  rmrf(tmpHome);
+  fs.mkdirSync(workspace, { recursive: true });
+  process.env.HOME = tmpHome;
+
+  try {
+    const result = await skillManage.execute('tc-1', {
+      action: 'create',
+      name: 'Release Checklist',
+      content: '## Steps\n\nShip it.\n',
+      description: 'Reusable release workflow',
+      triggers: ['release day', 'deploy prep'],
+      actions: ['review checklist']
+    });
+
+    const created = fs.existsSync(skillPath) ? fs.readFileSync(skillPath, 'utf-8') : '';
+
+    if (result?.isError) {
+      fail('create builds frontmatter from body + metadata', result.content?.[0]?.text || 'tool returned error');
+    } else if (!created.startsWith('---\nname: "Release Checklist"\ndescription: "Reusable release workflow"\ntriggers:\n  - "release day"\n  - "deploy prep"\nactions:\n  - "review checklist"\n---\n## Steps\n\nShip it.\n')) {
+      fail('create builds frontmatter from body + metadata', `unexpected file content: ${JSON.stringify(created)}`);
+    } else {
+      pass('create builds frontmatter from body + metadata');
+    }
+  } catch (e) {
+    fail('create builds frontmatter from body + metadata', e.message);
+  } finally {
+    process.env.HOME = previousHome;
+    rmrf(tmpHome);
   }
 }
 
