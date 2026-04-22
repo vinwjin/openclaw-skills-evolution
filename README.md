@@ -42,14 +42,26 @@ version: 1.0.0
 
 ## 安装
 
+### 一键安装（推荐）
 ```bash
-# 复制插件到扩展目录
-cp -r . ~/.openclaw/extensions/skills-evolution
-
-# 确保 openclaw.json 已配置（plugins.entries 和 plugins.allow）
-# 重启 Gateway
-openclaw gateway restart
+curl -fsSL https://raw.githubusercontent.com/vinwjin/openclaw-skills-evolution/master/install.sh | bash
 ```
+
+### 手动安装
+```bash
+# 克隆仓库
+git clone https://github.com/vinwjin/openclaw-skills-evolution.git ~/.openclaw/extensions/skills-evolution
+
+# 重启 Gateway
+systemctl --user restart openclaw-gateway.service
+```
+
+### openclaw.json 配置（如未自动配置）
+确保 `plugins.entries` 包含：
+```json
+"skills-evolution": { "enabled": true }
+```
+确保 `plugins.allow` 包含 `"skills-evolution"`。
 
 ## 文件结构
 
