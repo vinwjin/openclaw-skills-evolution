@@ -43,56 +43,51 @@ const plugin = {
     // 轨道2-A：session_end — 提取 session 摘要
     // -------------------------------------------------------------------------
     api.on('session_end', async (event, ctx) => {
-      const sessionId = event.sessionId || event.session?.id;
+      // sessionId 优先从 ctx 取（event 上的字段不稳定）
+      const sessionId = ctx?.sessionId || event.sessionId || event.session?.id;
       const sessionFile = event.sessionFile;
 
       if (!sessionFile || !sessionId) return;
 
-      // 读取并摘要 session
-      const summarizer = new SessionSummarizer();
-      const summary = await summarizer.summarize(sessionFile);
-      if (!summary) return;
+      try {
+        // 读取并摘要 session
+        const summarizer = new SessionSummarizer();
+        const summary = await summarizer.summarize(sessionFile);
+        if (!summary) return;
 
-      // 存入注册表，标记为待审视
-      sessionRegistry.set(sessionId, {
-        ...summary,
-        timestamp: Date.now()
-      });
+        // 存入注册表，标记为待审视
+        sessionRegistry.set(sessionId, {
+          ...summary,
+          timestamp: Date.now()
+        });
 
-      console.error(`[skills-evolution] session_end: ${sessionId} — ${summary.topic}`);
+        console.error(`[skills-evolution] session_end: ${sessionId} — topic="${summary?.topic || 'none'}"`);
+      } catch (err) {
+        console.error(`[skills-evolution] session_end error: ${sessionId} — ${err.message}`);
+      }
     });
 
     // -------------------------------------------------------------------------
     // 轨道2-B：before_prompt_build — 注入审视机会
-    // 只在有待审视 session 时注入，注入后清除标记
+    // event: { prompt, messages }, ctx: { sessionId, ... }
+    // 返回 { appendSystemContext } 让 OpenClaw 追加到 system prompt
     // -------------------------------------------------------------------------
     api.on('before_prompt_build', async (event, ctx) => {
-      const sessionId = event.session?.id;
+      // sessionId 来自 ctx，不是 event
+      const sessionId = ctx?.sessionId;
       if (!sessionId) return;
 
       const entry = sessionRegistry.get(sessionId);
       if (!entry) return;
 
-      // 注入审视提示（作为 system prompt 的追加内容）
-      // 这让 Agent 在下一个 turn 开头有机会决定是否创建 skill
+      // 注入审视提示
       const reviewPrompt = buildReviewPrompt(entry);
 
-      // 追加到 hints 或 messages 中，让 OpenClaw 在构建 prompt 时包含它
-      if (event.hints) {
-        event.hints.reviewPrompt = reviewPrompt;
-      }
-      if (event.messages) {
-        // 在最后一条 system 消息后追加审视提示
-        const sysIdx = event.messages.map(m => m.role).lastIndexOf('system');
-        if (sysIdx !== -1) {
-          const sysMsg = event.messages[sysIdx];
-          const existingText = sysMsg.content?.[0]?.text || sysMsg.text || '';
-          sysMsg.content = [{ type: 'text', text: existingText + '\n\n' + reviewPrompt }];
-        }
-      }
-
+      // 返回 appendSystemContext，OpenClaw 会追加到 system prompt 末尾
       // 清除标记，避免重复注入
       sessionRegistry.delete(sessionId);
+
+      return { appendSystemContext: reviewPrompt };
     });
 
     // -------------------------------------------------------------------------

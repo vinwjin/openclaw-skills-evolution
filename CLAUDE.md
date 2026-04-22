@@ -129,9 +129,19 @@ openclaw-skills-evolution/
 | `plugin/openclaw.plugin.json` | ✅ 完成 |
 | `plugin/package.json` | ✅ 完成 |
 | README.md | ✅ 完成 |
-| 安装目录同步 | ⏳ 待做 |
+| 安装目录同步 | ✅ 完成（2026-04-22） |
 | Gateway 重启 | ⏳ 待做 |
 | 实际验证（双轨测试） | ⏳ 待做 |
+
+---
+
+## Bug 修复记录
+
+### skill-saver.js async/await bug（已修复）
+- **日期**：2026-04-22
+- **问题**：`async save()` 内部用 `fs.writeFileSync`（同步），Agent 调用时若不 await，Promise 直接 resolve 但文件未写入
+- **修复**：`fs.mkdirSync` → `await fs.promises.mkdir`；`fs.writeFileSync` → `await fs.promises.writeFile`
+- **验证**：模拟 Agent 不 await 调用，文件正确写入
 
 ---
 
