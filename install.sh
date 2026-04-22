@@ -27,36 +27,11 @@ echo "[3/4] 安装到 $REPO_DIR ..."
 mkdir -p "$(dirname "$REPO_DIR")"
 mv "$TEMP_DIR" "$REPO_DIR"
 
-# 4. 确保 openclaw.json 配置正确
-CONFIG="$HOME/.openclaw/openclaw.json"
-if [ -f "$CONFIG" ]; then
-  echo "[4/4] 检查 openclaw.json 配置..."
-
-  # 用 jq 自动写入，避免手动配置
-  if command -v jq &>/dev/null; then
-    # 写入 plugins.entries.skills-evolution
-    if ! grep -q '"skills-evolution"' "$CONFIG"; then
-      TEMP=$(mktemp)
-      jq '.plugins.entries["skills-evolution"] = {"enabled": true}' "$CONFIG" > "$TEMP" && mv "$TEMP" "$CONFIG"
-      echo "  [OK] 已添加 plugins.entries.skills-evolution"
-    fi
-
-    # 写入 plugins.allow
-    if ! grep -q 'skills-evolution' "$CONFIG"; then
-      TEMP=$(mktemp)
-      jq '.plugins.allow += ["skills-evolution"]' "$CONFIG" > "$TEMP" && mv "$TEMP" "$CONFIG"
-      echo "  [OK] 已添加 plugins.allow"
-    fi
-  else
-    echo "  [WARN] jq 未安装，无法自动配置"
-    echo "  请手动添加：{ \"id\": \"skills-evolution\", \"enabled\": true }"
-  fi
+# 4. 运行 npm postinstall，自动配置 openclaw.json
+echo "[4/4] 运行 postinstall ..."
+if command -v npm &>/dev/null; then
+  (cd "$REPO_DIR" && npm run postinstall --silent)
+else
+  echo "[WARN] npm 未安装，未运行 postinstall"
+  echo "请手动执行：cd \"$REPO_DIR\" && npm run postinstall --silent"
 fi
-
-echo ""
-echo "[OK] 安装完成！"
-echo ""
-echo "下一步："
-echo "  1. 重启 Gateway：systemctl --user restart openclaw-gateway.service"
-echo "  2. 验证：openclaw plugins list"
-echo ""

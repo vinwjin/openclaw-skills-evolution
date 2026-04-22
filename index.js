@@ -12,6 +12,7 @@
  * - 全程 Agent 自主决策，不做全自动沉淀
  */
 
+const fs = require('fs');
 const { SkillLoader } = require('./lib/skill-loader');
 const { SkillSaver } = require('./lib/skill-saver');
 const { SkillIndex } = require('./lib/skill-index');
@@ -237,7 +238,9 @@ async function handleEdit(name, content) {
   if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
-    fs.writeFileSync(found.path, content, 'utf-8');
+    const saver = new SkillSaver();
+    saver.validate(content);
+    await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' updated.`);
   } catch (e) {
     return formatError(`Failed to update skill: ${e.message}`);
@@ -252,12 +255,14 @@ async function handlePatch(name, old_string, new_string) {
   if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
-    let content = fs.readFileSync(found.path, 'utf-8');
+    let content = await fs.promises.readFile(found.path, 'utf-8');
     if (!content.includes(old_string)) {
       return formatError('old_string not found in skill content. Check whitespace.');
     }
     content = content.replace(old_string, new_string || '');
-    fs.writeFileSync(found.path, content, 'utf-8');
+    const saver = new SkillSaver();
+    saver.validate(content);
+    await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' patched.`);
   } catch (e) {
     return formatError(`Failed to patch skill: ${e.message}`);
@@ -270,7 +275,7 @@ async function handleDelete(name) {
   if (!found) return formatError(`Skill '${name}' not found.`);
 
   try {
-    fs.rmSync(found.skillDir, { recursive: true });
+    await fs.promises.rm(found.skillDir, { recursive: true });
     return formatResult(`Skill '${name}' deleted.`);
   } catch (e) {
     return formatError(`Failed to delete skill: ${e.message}`);
@@ -278,8 +283,6 @@ async function handleDelete(name) {
 }
 
 // ============================================================================
-
-const fs = require('fs');
 
 function getWorkspace() {
   return process.env.HOME + '/.openclaw/workspace';
@@ -302,12 +305,11 @@ function pathDir(p) {
 }
 
 function parseSkillContent(skill) {
-  const nameMatch = skill.content.match(/^name:\s*(.+)$/m);
-  const descMatch = skill.content.match(/^description:\s*(.+)$/m);
+  const frontmatter = skill.frontmatter || {};
   return {
-    name: nameMatch ? nameMatch[1].trim() : skill.name,
-    description: descMatch ? descMatch[1].trim() : '',
-    triggers: [],
+    name: frontmatter.name || skill.name,
+    description: frontmatter.description || '',
+    triggers: Array.isArray(frontmatter.triggers) ? frontmatter.triggers : [],
     actions: []
   };
 }
@@ -317,7 +319,10 @@ function formatResult(message) {
 }
 
 function formatError(error) {
-  return { content: [{ type: 'text', text: `Error: ${error}` }] };
+  return {
+    content: [{ type: 'text', text: `Error: ${error}` }],
+    isError: true
+  };
 }
 
 module.exports = plugin;

@@ -1,7 +1,37 @@
 {
   "name": "openclaw-skills-evolution",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "bash ./scripts/postinstall.sh",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "install.sh",
+    "lib",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE",
+    "scripts"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "skills",
+    "agent",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vinwjin/openclaw-skills-evolution.git"
+  },
+  "author": "vinwjin",
+  "license": "MIT",
   "openclaw": {
     "extensions": ["./index.js"]
   }
