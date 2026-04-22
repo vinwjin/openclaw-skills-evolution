@@ -13,6 +13,7 @@
  */
 
 const fs = require('fs');
+const path = require('path');
 const { SkillLoader } = require('./lib/skill-loader');
 const { SkillSaver } = require('./lib/skill-saver');
 const { SkillIndex } = require('./lib/skill-index');
@@ -24,6 +25,8 @@ const { SessionSummarizer } = require('./lib/session-summarizer');
 // before_prompt_build 从队列 pop 第一个（最老的）条目注入审视提示
 // ============================================================================
 const pendingReviews = [];
+const pendingReviewsFile = path.join(__dirname, '.pending-reviews.json');
+let pendingReviewsLoaded = false;
 
 // ============================================================================
 // Plugin Definition
@@ -52,6 +55,8 @@ const plugin = {
       if (!sessionFile || !sessionId) return;
 
       try {
+        await loadPendingReviews();
+
         // 读取并摘要 session
         const summarizer = new SessionSummarizer();
         const summary = await summarizer.summarize(sessionFile);
@@ -62,6 +67,7 @@ const plugin = {
           ...summary,
           timestamp: Date.now()
         });
+        await savePendingReviews();
 
         console.error(`[skills-evolution] session_end: queued review — topic="${summary?.topic || 'none'}", queue_len=${pendingReviews.length}`);
       } catch (err) {
@@ -75,12 +81,15 @@ const plugin = {
     // 返回 { appendSystemContext } 让 OpenClaw 追加到 system prompt
     // -------------------------------------------------------------------------
     api.on('before_prompt_build', async (event, ctx) => {
+      await loadPendingReviews();
+
       // pendingReviews 是全局队列，不依赖 sessionId
       if (pendingReviews.length === 0) return;
 
       // 取出最老的待审视 session
       const entry = pendingReviews.shift();
       if (!entry) return;
+      await savePendingReviews();
 
       // 注入审视提示
       const reviewPrompt = buildReviewPrompt(entry);
@@ -219,12 +228,16 @@ const plugin = {
 function buildReviewPrompt(entry) {
   const { topic, tools, keyFindings } = entry;
   const toolList = tools.length > 0 ? `工具: ${tools.join(', ')}` : '';
+  const findingsBlock = Array.isArray(keyFindings) && keyFindings.length > 0
+    ? `\n关键发现 / 已完成内容：\n${keyFindings.map(finding => `\n\`\`\`text\n${finding}\n\`\`\``).join('')}\n`
+    : '';
 
   return `
 ## 经验审视机会
 
 上一个 session 主题：**${topic}**
 ${toolList}
+${findingsBlock}
 
 如果这个 session 中发现了值得复用的解决方案、反复出现的模式、或被纠正的错误，考虑调用 skill_manage create 沉淀为 SKILL.md。
 `;
@@ -356,12 +369,55 @@ function toYamlString(value) {
 
 function parseSkillContent(skill) {
   const frontmatter = skill.frontmatter || {};
+  const bodyContent = typeof skill.content === 'string'
+    ? skill.content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim()
+    : '';
   return {
     name: frontmatter.name || skill.name,
     description: frontmatter.description || '',
     triggers: Array.isArray(frontmatter.triggers) ? frontmatter.triggers : [],
-    actions: []
+    actions: Array.isArray(frontmatter.actions) ? frontmatter.actions : [],
+    content: bodyContent
   };
+}
+
+async function loadPendingReviews() {
+  if (pendingReviewsLoaded) return;
+  pendingReviewsLoaded = true;
+
+  try {
+    if (!fs.existsSync(pendingReviewsFile)) return;
+
+    const raw = await fs.promises.readFile(pendingReviewsFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+
+    pendingReviews.length = 0;
+    pendingReviews.push(...parsed.filter(isValidPendingReview));
+  } catch (err) {
+    console.error(`[skills-evolution] pending review load error: ${err.message}`);
+  }
+}
+
+async function savePendingReviews() {
+  try {
+    await fs.promises.writeFile(
+      pendingReviewsFile,
+      JSON.stringify(pendingReviews, null, 2) + '\n',
+      'utf-8'
+    );
+  } catch (err) {
+    console.error(`[skills-evolution] pending review save error: ${err.message}`);
+  }
+}
+
+function isValidPendingReview(entry) {
+  return Boolean(
+    entry &&
+    typeof entry.topic === 'string' &&
+    Array.isArray(entry.tools) &&
+    Array.isArray(entry.keyFindings)
+  );
 }
 
 function formatResult(message) {
@@ -377,3 +433,4 @@ function formatError(error) {
 
 module.exports = plugin;
 module.exports.buildSkillContent = buildSkillContent;
+module.exports.buildReviewPrompt = buildReviewPrompt;

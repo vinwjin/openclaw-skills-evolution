@@ -15,6 +15,7 @@ import { SkillLoader } from '../lib/skill-loader.js';
 import { SkillSaver } from '../lib/skill-saver.js';
 import { SessionSummarizer } from '../lib/session-summarizer.js';
 const plugin = require('../index.js');
+const pendingReviewsPath = path.join(path.dirname(fileURLToPath(new URL('../index.js', import.meta.url))), '.pending-reviews.json');
 
 // ============================================================================
 // Helpers
@@ -77,6 +78,14 @@ console.log('\n[SkillIndex]');
     const r = idx.search('');
     if (r.length === 0) pass('empty query returns empty');
     else fail('empty query returns empty', `got ${JSON.stringify(r)}`);
+  }
+
+  {
+    const idx3 = new SkillIndex();
+    idx3.add({ name: 'Digit Trap', description: 'digit handling', triggers: [], actions: [], content: '' });
+    const r = idx3.search('git');
+    if (r.length === 0) pass('tokenized matching avoids substring false positives');
+    else fail('tokenized matching avoids substring false positives', `got ${JSON.stringify(r)}`);
   }
 }
 
@@ -184,6 +193,19 @@ console.log('\n[SkillLoader parseFrontmatter]');
         `got ${JSON.stringify(triggers)}`);
   }
   rmrf(dir7);
+
+  const dir8 = makeSkillDir('l8');
+  writeSkill(dir8, '---\nname: t\nactions:\n  - review\n  - publish\n---\n');
+  {
+    const skill = await loadFrom(dir8);
+    const actions = skill?.frontmatter?.actions;
+    if (actions && JSON.stringify(actions) === JSON.stringify(['review', 'publish']))
+      pass('actions list parsed from frontmatter');
+    else
+      fail('actions list parsed from frontmatter',
+        `got ${JSON.stringify(actions)}, want ["review","publish"]`);
+  }
+  rmrf(dir8);
 }
 
 // ============================================================================
@@ -223,6 +245,21 @@ console.log('\n[SkillSaver]');
     rmrf(dir);
     if (exists) pass('save creates skill directory and file');
     else fail('save creates skill directory and file', `file not found: ${result.filePath}`);
+  }
+  {
+    const dir = makeSkillDir('s2');
+    const contentA = '---\nname: Test Skill\n---\nfirst\n';
+    const contentB = '---\nname: Test Skill\n---\nsecond\n';
+    await saver.save(dir, { name: 'Test Skill', content: contentA });
+    let threw = false;
+    try {
+      await saver.save(dir, { name: 'Test Skill!', content: contentB });
+    } catch (e) {
+      threw = e.message.includes('slug collision');
+    }
+    rmrf(dir);
+    if (threw) pass('slug collision with different content throws');
+    else fail('slug collision with different content throws', 'no collision error thrown');
   }
 }
 
@@ -347,11 +384,75 @@ console.log('\n[SessionSummarizer]');
 
 console.log('\n[Plugin]');
 {
-  const plugin = (await import('../index.js')).default;
-  if (plugin.id === 'skills-evolution' && typeof plugin.register === 'function')
+  const pluginModule = await import('../index.js');
+  const importedPlugin = pluginModule.default || pluginModule;
+  if (importedPlugin.id === 'skills-evolution' && typeof importedPlugin.register === 'function')
     pass('plugin exports correct structure');
   else
-    fail('plugin exports correct structure', `id=${plugin.id}, register=${typeof plugin.register}`);
+    fail('plugin exports correct structure', `id=${importedPlugin.id}, register=${typeof importedPlugin.register}`);
+}
+
+console.log('\n[Review Prompt + Persistence]');
+{
+  try { fs.unlinkSync(pendingReviewsPath); } catch (e) {}
+
+  const prompt = plugin.buildReviewPrompt({
+    topic: 'Release automation',
+    tools: ['terminal'],
+    keyFindings: ['npm version 0.4.5', 'updated queue persistence']
+  });
+  if (prompt.includes('```text\nnpm version 0.4.5\n```') && prompt.includes('updated queue persistence'))
+    pass('review prompt injects key findings code blocks');
+  else
+    fail('review prompt injects key findings code blocks', prompt);
+
+  const handlers = new Map();
+  plugin.register({
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerTool() {}
+  });
+
+  const sessionFile = `/tmp/se-session-persist-${process.pid}.jsonl`;
+  fs.writeFileSync(sessionFile, [
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'user', content: [{ type: 'text', text: 'Ship the release flow' }] }
+    }),
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Done.\n```js\nconst released = true;\n```' }] }
+    })
+  ].join('\n') + '\n');
+
+  await handlers.get('session_end')({ sessionFile }, { sessionId: 'persist-1' });
+  const persisted = fs.existsSync(pendingReviewsPath)
+    ? JSON.parse(fs.readFileSync(pendingReviewsPath, 'utf-8'))
+    : null;
+
+  if (Array.isArray(persisted) && persisted.length === 1 && persisted[0].topic.includes('Ship the release flow'))
+    pass('session_end persists pending reviews to disk');
+  else
+    fail('session_end persists pending reviews to disk', JSON.stringify(persisted));
+
+  const injected = await handlers.get('before_prompt_build')({}, { sessionId: 'persist-2' });
+  const remaining = fs.existsSync(pendingReviewsPath)
+    ? JSON.parse(fs.readFileSync(pendingReviewsPath, 'utf-8'))
+    : null;
+
+  if (injected?.appendSystemContext?.includes('const released = true;'))
+    pass('before_prompt_build loads queue and injects persisted review');
+  else
+    fail('before_prompt_build loads queue and injects persisted review', JSON.stringify(injected));
+
+  if (Array.isArray(remaining) && remaining.length === 0)
+    pass('before_prompt_build updates persisted queue after dequeue');
+  else
+    fail('before_prompt_build updates persisted queue after dequeue', JSON.stringify(remaining));
+
+  fs.unlinkSync(sessionFile);
+  try { fs.unlinkSync(pendingReviewsPath); } catch (e) {}
 }
 
 // ============================================================================

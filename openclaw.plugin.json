@@ -2,7 +2,7 @@
   "id": "skills-evolution",
   "kind": "extension",
   "name": "Skills Evolution",
-  "version": "0.4.1",
+  "version": "0.4.5",
   "description": "Skills 自我进化系统 — Agent 主动沉淀经验 + session 结束时自动审视.md",
   "configSchema": {
     "type": "object",
