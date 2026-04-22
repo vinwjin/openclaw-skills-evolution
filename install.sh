@@ -31,18 +31,25 @@ mv "$TEMP_DIR" "$REPO_DIR"
 CONFIG="$HOME/.openclaw/openclaw.json"
 if [ -f "$CONFIG" ]; then
   echo "[4/4] 检查 openclaw.json 配置..."
-  
-  # 检查 plugins.entries.skills-evolution
-  if ! grep -q '"skills-evolution"' "$CONFIG"; then
-    echo "  [WARN] openclaw.json 缺少 skills-evolution entry，跳过自动配置"
-    echo "  请手动添加："
-    echo '  { "id": "skills-evolution", "enabled": true }'
-  fi
 
-  # 检查 plugins.allow
-  if ! grep -q 'skills-evolution' "$CONFIG"; then
-    echo "  [WARN] openclaw.json plugins.allow 缺少 skills-evolution"
-    echo "  请手动添加到 plugins.allow 数组中"
+  # 用 jq 自动写入，避免手动配置
+  if command -v jq &>/dev/null; then
+    # 写入 plugins.entries.skills-evolution
+    if ! grep -q '"skills-evolution"' "$CONFIG"; then
+      TEMP=$(mktemp)
+      jq '.plugins.entries["skills-evolution"] = {"enabled": true}' "$CONFIG" > "$TEMP" && mv "$TEMP" "$CONFIG"
+      echo "  [OK] 已添加 plugins.entries.skills-evolution"
+    fi
+
+    # 写入 plugins.allow
+    if ! grep -q 'skills-evolution' "$CONFIG"; then
+      TEMP=$(mktemp)
+      jq '.plugins.allow += ["skills-evolution"]' "$CONFIG" > "$TEMP" && mv "$TEMP" "$CONFIG"
+      echo "  [OK] 已添加 plugins.allow"
+    fi
+  else
+    echo "  [WARN] jq 未安装，无法自动配置"
+    echo "  请手动添加：{ \"id\": \"skills-evolution\", \"enabled\": true }"
   fi
 fi
 
