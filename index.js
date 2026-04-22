@@ -19,10 +19,11 @@ const { SkillIndex } = require('./lib/skill-index');
 const { SessionSummarizer } = require('./lib/session-summarizer');
 
 // ============================================================================
-// 全局 session 摘要注册表
-// { sessionId: { topic, tools, keyFindings, timestamp } }
+// 全局待审视 session 队列（Array，而非 Map）
+// session_end 往队列 push 一个摘要
+// before_prompt_build 从队列 pop 第一个（最老的）条目注入审视提示
 // ============================================================================
-const sessionRegistry = new Map();
+const pendingReviews = [];
 
 // ============================================================================
 // Plugin Definition
@@ -56,13 +57,13 @@ const plugin = {
         const summary = await summarizer.summarize(sessionFile);
         if (!summary) return;
 
-        // 存入注册表，标记为待审视
-        sessionRegistry.set(sessionId, {
+        // 存入待审视队列
+        pendingReviews.push({
           ...summary,
           timestamp: Date.now()
         });
 
-        console.error(`[skills-evolution] session_end: ${sessionId} — topic="${summary?.topic || 'none'}"`);
+        console.error(`[skills-evolution] session_end: queued review — topic="${summary?.topic || 'none'}", queue_len=${pendingReviews.length}`);
       } catch (err) {
         console.error(`[skills-evolution] session_end error: ${sessionId} — ${err.message}`);
       }
@@ -74,19 +75,17 @@ const plugin = {
     // 返回 { appendSystemContext } 让 OpenClaw 追加到 system prompt
     // -------------------------------------------------------------------------
     api.on('before_prompt_build', async (event, ctx) => {
-      // sessionId 来自 ctx，不是 event
-      const sessionId = ctx?.sessionId;
-      if (!sessionId) return;
+      // pendingReviews 是全局队列，不依赖 sessionId
+      if (pendingReviews.length === 0) return;
 
-      const entry = sessionRegistry.get(sessionId);
+      // 取出最老的待审视 session
+      const entry = pendingReviews.shift();
       if (!entry) return;
 
       // 注入审视提示
       const reviewPrompt = buildReviewPrompt(entry);
 
-      // 返回 appendSystemContext，OpenClaw 会追加到 system prompt 末尾
-      // 清除标记，避免重复注入
-      sessionRegistry.delete(sessionId);
+      console.error(`[skills-evolution] before_prompt_build: injected review — topic="${entry.topic}", remaining=${pendingReviews.length}`);
 
       return { appendSystemContext: reviewPrompt };
     });
@@ -232,7 +231,7 @@ ${toolList}
 }
 
 function buildSkillContent(name, body, opts = {}) {
-  const lines = ['---', `name: ${toYamlString(name)}`];
+  const lines = [`name: ${toYamlString(name)}`];
   const { description, triggers, actions } = opts;
 
   if (description && description.trim()) {
@@ -241,7 +240,8 @@ function buildSkillContent(name, body, opts = {}) {
 
   appendYamlList(lines, 'triggers', triggers);
   appendYamlList(lines, 'actions', actions);
-  lines.push('---', '');
+  lines.unshift('---');  // 在最前面插入 '---'
+  lines.push('---', ''); // 闭合 frontmatter
 
   const normalizedBody = body.endsWith('\n') ? body : `${body}\n`;
   return `${lines.join('\n')}${normalizedBody}`;
