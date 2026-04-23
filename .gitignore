@@ -1,0 +1,19 @@
+# Operational state (kept locally, not committed)
+.pending-reviews.json
+.pending-deep-reviews.json
+.deep-review-done.json
+.deep-review-worker.log
+compaction-throttle.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
