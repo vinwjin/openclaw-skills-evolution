@@ -21,7 +21,7 @@ const { spawnDeepReview } = require('./lib/skill-summarizer-agent');
 // ============================================================================
 const pendingReviews = [];
 const pendingReviewsFile = path.join(__dirname, '.pending-reviews.json');
-let pendingReviewsLoaded = false;
+let pendingReviewsMtime = 0;
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+previous\s+instructions/i,
   /call\s+skill_manage/i,
@@ -63,8 +63,8 @@ const plugin = {
     api.on('after_compaction', async (event, ctx) => {
       const throttle = require('./lib/compaction-throttle');
       await throttle.record({
-        tokenBefore: Number(event?.tokenCount || 0) + (Number(event?.compactedCount || 0) * 200),
-        tokenAfter: Number(event?.tokenCount || 0),
+        estimatedOriginalTokens: Number(event?.tokenCount || 0) + (Number(event?.compactedCount || 0) * 200),
+        compressedTokens: Number(event?.tokenCount || 0),
         sessionKey: ctx?.sessionKey
       });
     });
@@ -279,7 +279,6 @@ const plugin = {
       parameters: { type: 'object', properties: {} },
 
       async execute(toolCallId, params, ctx) {
-        const sessionId = ctx?.sessionId || ctx?.sessionId;
         const sessionFile = ctx?.sessionFile || null;
 
         if (!sessionFile) {
@@ -622,11 +621,12 @@ function parseSkillContent(skill) {
 }
 
 async function loadPendingReviews() {
-  if (pendingReviewsLoaded) return;
-  pendingReviewsLoaded = true;
-
   try {
     if (!fs.existsSync(pendingReviewsFile)) return;
+
+    const stat = await fs.promises.stat(pendingReviewsFile);
+    // 文件未更新，跳过
+    if (stat.mtimeMs <= pendingReviewsMtime) return;
 
     const raw = await fs.promises.readFile(pendingReviewsFile, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -634,6 +634,7 @@ async function loadPendingReviews() {
 
     pendingReviews.length = 0;
     pendingReviews.push(...parsed.filter(isValidPendingReview));
+    pendingReviewsMtime = stat.mtimeMs;
   } catch (err) {
     console.error(`[skills-evolution] pending review load error: ${err.message}`);
   }

@@ -167,7 +167,6 @@ async function main() {
     };
 
     let records = [];
-    const pendingDoneFile = path.join(__dirname, '..', '.deep-review-done.json');
     if (fs.existsSync(pendingDoneFile)) {
       try {
         records = JSON.parse(fs.readFileSync(pendingDoneFile, 'utf-8'));
