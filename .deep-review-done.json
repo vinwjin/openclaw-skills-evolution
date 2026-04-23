@@ -1,0 +1,10 @@
+[
+  {
+    "skillName": "helloHelpWithCodingSkill",
+    "safeName": "hellohelpwithcodingskill",
+    "sessionFile": "/tmp/test-session.jsonl",
+    "topic": "Hello, help me with coding",
+    "completedAt": "2026-04-22T20:13:33.686Z",
+    "filePath": "/home/king/.openclaw/workspace/skills/hellohelpwithcodingskill/SKILL.md"
+  }
+]

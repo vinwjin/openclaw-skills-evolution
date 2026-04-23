@@ -1,15 +1,11 @@
 /**
  * OpenClaw Skills Evolution Plugin
- * v0.4: 双轨沉淀机制
+ * v0.5: 子 Agent 后台固化 + 主动审视指令 + 任务中主动发现
  *
- * 轨道1：Agent 主动调用 skill_manage 沉淀（工具模式）
- * 轨道2：session_end 时自动审视 → before_prompt_build 注入机会 → Agent 决定是否创建 skill
- *
- * 核心思路：
- * - session_end hook 只做一件事：读取 session JSONL，生成摘要，存入全局注册表
- * - before_prompt_build hook 检查是否有待审视的 session，有则注入简短提示
- * - 注入的提示让 Agent 在下一个 turn 开头有机会主动调用 skill_manage
- * - 全程 Agent 自主决策，不做全自动沉淀
+ * 升级内容：
+ * 1. session_end 时 spawn 子 Agent 在后台完成 skill 固化，主 Agent 不阻塞
+ * 2. 新增 trigger_review / trigger_deep_review 工具，用户可主动触发审视
+ * 3. before_prompt_build 增加复杂度检测，超过 10 次工具调用则主动注入发现提示
  */
 
 const fs = require('fs');
@@ -18,11 +14,10 @@ const { SkillLoader } = require('./lib/skill-loader');
 const { SkillSaver } = require('./lib/skill-saver');
 const { SkillIndex } = require('./lib/skill-index');
 const { SessionSummarizer } = require('./lib/session-summarizer');
+const { spawnDeepReview } = require('./lib/skill-summarizer-agent');
 
 // ============================================================================
-// 全局待审视 session 队列（Array，而非 Map）
-// session_end 往队列 push 一个摘要
-// before_prompt_build 从队列 pop 第一个（最老的）条目注入审视提示
+// 全局待审视 session 队列
 // ============================================================================
 const pendingReviews = [];
 const pendingReviewsFile = path.join(__dirname, '.pending-reviews.json');
@@ -45,10 +40,9 @@ const plugin = {
 
   register(api) {
     // -------------------------------------------------------------------------
-    // 轨道2-A：session_end — 提取 session 摘要
+    // 轨道2-A：session_end — spawn 子 Agent 固化（不阻塞）
     // -------------------------------------------------------------------------
     api.on('session_end', async (event, ctx) => {
-      // sessionId 优先从 ctx 取（event 上的字段不稳定）
       const sessionId = ctx?.sessionId || event.sessionId || event.session?.id;
       const sessionFile = event.sessionFile;
 
@@ -57,7 +51,7 @@ const plugin = {
       try {
         await loadPendingReviews();
 
-        // 读取并摘要 session
+        // 读取并摘要 session（同步，毫秒级）
         const summarizer = new SessionSummarizer();
         const summary = await summarizer.summarize(sessionFile);
         if (!summary) return;
@@ -69,38 +63,54 @@ const plugin = {
         });
         await savePendingReviews();
 
-        console.error(`[skills-evolution] session_end: queued review — topic="${summary?.topic || 'none'}", queue_len=${pendingReviews.length}`);
+        // 立即 spawn 子 Agent 做深度固化（不阻塞）
+        const workspace = getWorkspace();
+        spawnDeepReview(sessionFile, workspace, null);
+
+        console.error(`[skills-evolution] session_end: queued + spawned deep-review — topic="${summary?.topic || 'none'}"`);
       } catch (err) {
         console.error(`[skills-evolution] session_end error: ${sessionId} — ${err.message}`);
       }
     });
 
     // -------------------------------------------------------------------------
-    // 轨道2-B：before_prompt_build — 注入审视机会
-    // event: { prompt, messages }, ctx: { sessionId, ... }
-    // 返回 { appendSystemContext } 让 OpenClaw 追加到 system prompt
+    // 轨道2-B：before_prompt_build — 注入审视机会 + 复杂度检测
     // -------------------------------------------------------------------------
     api.on('before_prompt_build', async (event, ctx) => {
       await loadPendingReviews();
 
-      // pendingReviews 是全局队列，不依赖 sessionId
-      if (pendingReviews.length === 0) return;
+      const parts = [];
 
-      // 取出最老的待审视 session
-      const entry = pendingReviews.shift();
-      if (!entry) return;
-      await savePendingReviews();
+      // 1. 复杂度检测：当前 session 工具调用超过阈值时主动注入发现提示
+      const toolCallCount = countToolCalls(event);
+      const COMPLEXITY_THRESHOLD = 10;
+      if (toolCallCount > COMPLEXITY_THRESHOLD) {
+        const complexityPrompt = buildComplexityPrompt({
+          topic: extractTopicFromEvent(event),
+          toolCallCount,
+          tools: extractToolsFromEvent(event)
+        });
+        parts.push(complexityPrompt);
+        console.error(`[skills-evolution] before_prompt_build: complexity detected — ${toolCallCount} tool calls`);
+      }
 
-      // 注入审视提示
-      const reviewPrompt = buildReviewPrompt(entry);
+      // 2. 如果有待审视的 session，注入审视提示
+      if (pendingReviews.length > 0) {
+        const entry = pendingReviews.shift();
+        if (entry) {
+          await savePendingReviews();
+          parts.push(buildReviewPrompt(entry));
+          console.error(`[skills-evolution] before_prompt_build: injected review — topic="${entry.topic}", remaining=${pendingReviews.length}`);
+        }
+      }
 
-      console.error(`[skills-evolution] before_prompt_build: injected review — topic="${entry.topic}", remaining=${pendingReviews.length}`);
+      if (parts.length === 0) return;
 
-      return { appendSystemContext: reviewPrompt };
+      return { appendSystemContext: parts.join('\n') };
     });
 
     // -------------------------------------------------------------------------
-    // 轨道1：三个工具注册
+    // 轨道1：skill_manage 工具（保持不变）
     // -------------------------------------------------------------------------
     api.registerTool({
       name: 'skill_manage',
@@ -218,12 +228,183 @@ const plugin = {
         return formatResult(`Search results for "${query}":\n\n${lines.join('\n')}`);
       }
     });
+
+    // -------------------------------------------------------------------------
+    // v0.5 新增：主动审视工具
+    // -------------------------------------------------------------------------
+    api.registerTool({
+      name: 'trigger_review',
+      description: '对当前 session 进行摘要，生成审视机会并注入到下一个 prompt。立即返回，不阻塞。',
+      parameters: { type: 'object', properties: {} },
+
+      async execute(toolCallId, params, ctx) {
+        const sessionId = ctx?.sessionId || ctx?.sessionId;
+        const sessionFile = ctx?.sessionFile || null;
+
+        if (!sessionFile) {
+          return formatError('sessionFile not available for trigger_review');
+        }
+
+        try {
+          const summarizer = new SessionSummarizer();
+          const summary = await summarizer.summarize(sessionFile);
+          if (!summary) {
+            return formatError('Failed to summarize session');
+          }
+
+          // 注入审视机会到 pendingReviews（供 before_prompt_build 使用）
+          pendingReviews.push({
+            ...summary,
+            timestamp: Date.now(),
+            triggered: true
+          });
+          await savePendingReviews();
+
+          const topic = summary.topic || 'unknown';
+          const toolCount = summary.tools?.length || 0;
+          const findingsCount = summary.keyFindings?.length || 0;
+
+          return formatResult(
+            `Review triggered for session: "${topic}".\n` +
+            `Tools used: ${toolCount}, Key findings: ${findingsCount}.\n` +
+            `审视提示已注入到下一个 prompt，当前 pending reviews: ${pendingReviews.length}`
+          );
+        } catch (err) {
+          return formatError(`trigger_review failed: ${err.message}`);
+        }
+      }
+    });
+
+    api.registerTool({
+      name: 'trigger_deep_review',
+      description: 'Spawn 子 Agent 在后台做深度固化。立即返回，不阻塞。可通过查询 .deep-review-done.json 查看结果。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_name: {
+            type: 'string',
+            description: '可选，指定要创建的 skill 名称'
+          }
+        }
+      },
+
+      async execute(toolCallId, params, ctx) {
+        const sessionFile = ctx?.sessionFile || null;
+        const workspace = getWorkspace();
+
+        if (!sessionFile) {
+          return formatError('sessionFile not available for trigger_deep_review');
+        }
+
+        try {
+          const { skillName } = params;
+          const { pendingId } = spawnDeepReview(sessionFile, workspace, skillName || null);
+
+          return formatResult(
+            `Deep review spawned (id: ${pendingId}).\n` +
+            `后台固化进程已启动，结果将写入 ~/.openclaw/extensions/skills-evolution/.deep-review-done.json\n` +
+            `可通过检查该文件查看完成状态。`
+          );
+        } catch (err) {
+          return formatError(`trigger_deep_review failed: ${err.message}`);
+        }
+      }
+    });
   }
 };
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// -------------------------------------------------------------------------
+// 复杂度检测辅助函数（用于 before_prompt_build 主动发现）
+// -------------------------------------------------------------------------
+
+/**
+ * 从 event 对象统计当前 session 的工具调用次数
+ */
+function countToolCalls(event) {
+  const messages = event?.messages || [];
+  let count = 0;
+  for (const msg of messages) {
+    if (msg?.role !== 'assistant') continue;
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    for (const block of content) {
+      if (block?.type === 'toolCall') {
+        count++;
+        // nested tool calls
+        if (block?.toolCalls) {
+          count += block.toolCalls.length;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * 从 event 对象提取主题（第一个用户消息前80字符）
+ */
+function extractTopicFromEvent(event) {
+  const messages = event?.messages || [];
+  for (const msg of messages) {
+    if (msg?.role === 'user') {
+      const content = Array.isArray(msg.content) ? msg.content : [];
+      for (const block of content) {
+        if (block?.type === 'text' && typeof block?.text === 'string') {
+          return block.text.slice(0, 80).replace(/\n/g, ' ').trim() || 'Unknown';
+        }
+      }
+    }
+  }
+  return 'Unknown';
+}
+
+/**
+ * 从 event 对象提取用到的工具列表
+ */
+function extractToolsFromEvent(event) {
+  const messages = event?.messages || [];
+  const tools = new Set();
+  for (const msg of messages) {
+    if (msg?.role !== 'assistant') continue;
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    for (const block of content) {
+      if (block?.type === 'toolCall') {
+        const name = block?.name || block?.toolName || block?.tool?.name || '';
+        if (name) tools.add(name);
+        if (block?.toolCalls) {
+          for (const nested of block.toolCalls) {
+            const n = nested?.name || nested?.toolName || '';
+            if (n) tools.add(n);
+          }
+        }
+      }
+    }
+  }
+  return Array.from(tools);
+}
+
+/**
+ * 构建复杂度触发的主动发现提示
+ */
+function buildComplexityPrompt({ topic, toolCallCount, tools }) {
+  const toolList = tools.length > 0 ? `工具: ${tools.slice(0, 5).join(', ')}${tools.length > 5 ? '...' : ''}` : '';
+  return `
+## 🎯 检测到值得沉淀的经验
+
+你在完成一个复杂任务（${topic}，${toolCallCount}次工具调用）。这类复杂问题的解决方案通常值得固化。
+
+${toolList}
+
+如果这个解决方案是通用的，可以调用 trigger_deep_review 启动后台固化流程。
+`;
+}
+
+// -------------------------------------------------------------------------
+// Session 摘要审视提示
+// -------------------------------------------------------------------------
 
 function buildReviewPrompt(entry) {
   const { topic, tools, keyFindings } = entry;
