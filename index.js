@@ -45,6 +45,42 @@ const plugin = {
 
   register(api) {
     // -------------------------------------------------------------------------
+    // Context compaction: anti-thrashing hooks + provider registration
+    // -------------------------------------------------------------------------
+    api.on('before_compaction', async (event, ctx) => {
+      const throttle = require('./lib/compaction-throttle');
+      const shouldContinue = await throttle.check({
+        tokenCount: event?.tokenCount,
+        sessionKey: ctx?.sessionKey
+      });
+
+      if (!shouldContinue) {
+        console.error('[skills-evolution] compaction skipped: anti-thrashing cooldown');
+        return;
+      }
+    });
+
+    api.on('after_compaction', async (event, ctx) => {
+      const throttle = require('./lib/compaction-throttle');
+      await throttle.record({
+        tokenBefore: Number(event?.tokenCount || 0) + (Number(event?.compactedCount || 0) * 200),
+        tokenAfter: Number(event?.tokenCount || 0),
+        sessionKey: ctx?.sessionKey
+      });
+    });
+
+    if (typeof api.registerCompactionProvider === 'function') {
+      api.registerCompactionProvider({
+        id: 'skills-evolution-compactor',
+        label: 'Skills Evolution Compactor',
+        summarize: async ({ messages, previousSummary, customInstructions, signal }) => {
+          const provider = require('./lib/compaction-provider');
+          return provider.summarize({ messages, previousSummary, customInstructions, signal });
+        }
+      });
+    }
+
+    // -------------------------------------------------------------------------
     // 轨道2-A：session_end — spawn 子 Agent 固化（不阻塞）
     // -------------------------------------------------------------------------
     api.on('session_end', async (event, ctx) => {

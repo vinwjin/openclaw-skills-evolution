@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "thresholdPercent": 0.5,
+  "protectFirstN": 3,
+  "protectLastN": 20,
+  "summaryTargetRatio": 0.2,
+  "model": "MiniMax-M2.7",
+  "provider": "minimax-cn",
+  "baseUrl": "https://api.minimaxi.com/v1",
+  "apiKeyEnv": "MINIMAX_API_KEY",
+  "timeout": 120,
+  "maxSummaryTokens": 4000
+}

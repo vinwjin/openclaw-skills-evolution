@@ -1,7 +1,7 @@
 {
   "name": "@vinwjin/openclaw-skills-evolution",
-  "version": "0.5.0",
-  "description": "Skills 自我进化系统 — Agent 主动沉淀经验为可复用 SKILL.md",
+  "version": "0.6.0",
+  "description": "OpenClaw Agent 自我进化系统 — 任务中主动沉淀经验 + session 自动审视 + 上下文智能压缩",
   "main": "index.js",
   "scripts": {
     "pack:dry-run": "npm pack --dry-run"
@@ -12,6 +12,7 @@
   "files": [
     "index.js",
     "install.sh",
+    "compaction-config.json",
     "lib",
     "openclaw.plugin.json",
     "README.md",
