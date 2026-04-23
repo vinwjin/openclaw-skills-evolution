@@ -117,11 +117,13 @@ optional-skills/    ← 可选安装的额外技能
 
 ## 六、vs OpenClaw 实现对比
 
-| 特性 | Hermes | OpenClaw (v0.3) |
+| 特性 | Hermes | OpenClaw (v0.6) |
 |------|--------|-----------------|
 | Skill 创建触发 | SKILLS_GUIDANCE 提示 | Agent 自主判断 |
-| 自动分析 | 内置 LLM | 无（纯工具模式） |
+| 自动分析 | 内置 LLM | 工具模式（skill_manage） |
 | 自学习进化 | DSPy + GEPA | 不支持 |
-| 加载策略 | 4 级按需加载 | 直接加载全文 |
+| 加载策略 | 4 级按需加载 | 全文加载 |
 | 存储 | 文件系统 | 文件系统 |
-| Hooks | session_start/end | 无 |
+| Hooks | session_start/end | session_end + before_prompt_build |
+| 上下文压缩 | ContextCompressor | CompactionProvider（两阶段） |
+| 防震荡 | 是 | 是（cooldown 300s） |
