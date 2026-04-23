@@ -13,6 +13,24 @@
 
 const fs = require('fs');
 const path = require('path');
+const MAX_SESSION_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_SESSION_LINES = 10000;
+const MAX_LINE_LENGTH = 10000;
+const MAX_FINDINGS = 5;
+const SECRET_PATTERNS = [
+  /\bapi[_-]?key\b/i,
+  /\btoken\b/i,
+  /\bpassword\b/i,
+  /\bbearer\b/i,
+  /\bsecret\b/i,
+  /\bprivate\b/i,
+  /\bsk-[a-z0-9]{10,}\b/i
+];
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+previous\s+instructions/i,
+  /call\s+skill_manage/i,
+  /system\s+prompt/i
+];
 
 // ============================================================================
 // CLI 参数解析
@@ -68,8 +86,18 @@ async function main() {
       throw new Error(`session file not found: ${sessionFile}`);
     }
 
+    const sessionStat = await fs.promises.stat(sessionFile);
+    // 大文件直接拒绝，避免后台 worker 读取异常 session 时耗尽资源。
+    if (sessionStat.size > MAX_SESSION_FILE_SIZE) {
+      throw new Error(`session file too large: ${sessionStat.size} bytes`);
+    }
+
     const raw = await fs.promises.readFile(sessionFile, 'utf-8');
-    const lines = raw.split('\n').filter(l => l.trim());
+    const lines = raw
+      .split('\n')
+      .slice(0, MAX_SESSION_LINES)
+      .map(line => line.length > MAX_LINE_LENGTH ? line.slice(0, MAX_LINE_LENGTH) : line)
+      .filter(l => l.trim());
     const entries = lines.map(l => {
       try { return JSON.parse(l); }
       catch { return null; }
@@ -83,7 +111,7 @@ async function main() {
 
     // 2. 提取 session 内容
     const sessionData = extractSessionData(entries);
-    log(`Session topic: ${sessionData.topic}, tools: ${sessionData.tools.join(', ')}`);
+    log(`Session parsed: topicLength=${sessionData.topic.length}, tools=${sessionData.tools.length}, findings=${sessionData.findings.length}`);
 
     // 3. 生成 skill 名称（如果未指定）
     const finalSkillName = skillName || generateSkillName(sessionData.topic);
@@ -106,7 +134,9 @@ async function main() {
       skillName: finalSkillName,
       safeName,
       sessionFile,
-      topic: sessionData.topic,
+      // done 记录只保留结构化元信息，避免写入原始 session 片段。
+      findingsCount: sessionData.findings.length,
+      toolCount: sessionData.tools.length,
       completedAt: new Date().toISOString(),
       filePath
     };
@@ -202,9 +232,9 @@ function extractSessionData(entries) {
 
     const codeBlocks = text.match(/```[\s\S]*?```/g) || [];
     for (const block of codeBlocks.slice(0, 3)) {
-      const firstLine = block.split('\n')[1] || '';
-      if (firstLine.length > 0 && firstLine.length < 120) {
-        findings.push(firstLine.trim());
+      const firstLine = sanitizeFinding(block.split('\n')[1] || '');
+      if (firstLine) {
+        findings.push(firstLine);
       }
     }
   }
@@ -212,7 +242,7 @@ function extractSessionData(entries) {
   return {
     topic,
     tools: Array.from(toolNames),
-    findings: findings.slice(0, 5)
+    findings: findings.slice(0, MAX_FINDINGS)
   };
 }
 
@@ -277,6 +307,18 @@ ${findingsBlock ? findingsBlock + '\n' : ''}
 
 <!-- Add any important notes or caveats -->
 `;
+}
+
+function sanitizeFinding(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed || trimmed.length >= 120) return null;
+  if (SECRET_PATTERNS.some(pattern => pattern.test(trimmed))) {
+    return '[REDACTED: sensitive finding]';
+  }
+  if (PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(trimmed))) {
+    return null;
+  }
+  return trimmed;
 }
 
 // ============================================================================

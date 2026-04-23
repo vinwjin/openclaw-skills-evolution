@@ -22,6 +22,11 @@ const { spawnDeepReview } = require('./lib/skill-summarizer-agent');
 const pendingReviews = [];
 const pendingReviewsFile = path.join(__dirname, '.pending-reviews.json');
 let pendingReviewsLoaded = false;
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+previous\s+instructions/i,
+  /call\s+skill_manage/i,
+  /system\s+prompt/i
+];
 
 // ============================================================================
 // Plugin Definition
@@ -390,11 +395,12 @@ function extractToolsFromEvent(event) {
  * 构建复杂度触发的主动发现提示
  */
 function buildComplexityPrompt({ topic, toolCallCount, tools }) {
-  const toolList = tools.length > 0 ? `工具: ${tools.slice(0, 5).join(', ')}${tools.length > 5 ? '...' : ''}` : '';
+  const topicSummary = summarizePromptField(topic, 60, '复杂任务');
+  const toolList = tools.length > 0 ? `工具数量: ${tools.length}（示例: ${tools.slice(0, 5).map(tool => escapePromptText(tool, 30)).join(', ')}${tools.length > 5 ? '...' : ''}）` : '工具数量: 0';
   return `
 ## 🎯 检测到值得沉淀的经验
 
-你在完成一个复杂任务（${topic}，${toolCallCount}次工具调用）。这类复杂问题的解决方案通常值得固化。
+你在完成一个复杂任务（主题摘要：${topicSummary}，${toolCallCount}次工具调用）。这类复杂问题的解决方案通常值得固化。
 
 ${toolList}
 
@@ -408,15 +414,18 @@ ${toolList}
 
 function buildReviewPrompt(entry) {
   const { topic, tools, keyFindings } = entry;
-  const toolList = tools.length > 0 ? `工具: ${tools.join(', ')}` : '';
+  const safeTopic = summarizePromptField(topic, 80, 'Unknown');
+  const toolList = tools.length > 0
+    ? `工具数量: ${tools.length}（${tools.slice(0, 8).map(tool => escapePromptText(tool, 30)).join(', ')}${tools.length > 8 ? '...' : ''}）`
+    : '工具数量: 0';
   const findingsBlock = Array.isArray(keyFindings) && keyFindings.length > 0
-    ? `\n关键发现 / 已完成内容：\n${keyFindings.map(finding => `\n\`\`\`text\n${finding}\n\`\`\``).join('')}\n`
+    ? `\n关键发现 / 已完成内容（已转义）：\n${keyFindings.map(finding => `\n\`\`\`text\n${escapePromptText(finding, 200)}\n\`\`\``).join('')}\n`
     : '';
 
   return `
 ## 经验审视机会
 
-上一个 session 主题：**${topic}**
+上一个 session 主题摘要：**${safeTopic}**
 ${toolList}
 ${findingsBlock}
 
@@ -465,6 +474,8 @@ async function handleEdit(name, content) {
   try {
     const saver = new SkillSaver();
     saver.validate(content);
+    // 写入前再次校验真实路径，阻止已存在 skill 被符号链接劫持。
+    await assertWritableSkillTarget(workspace, found.path);
     await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' updated.`);
   } catch (e) {
@@ -487,6 +498,8 @@ async function handlePatch(name, old_string, new_string) {
     content = content.replace(old_string, new_string || '');
     const saver = new SkillSaver();
     saver.validate(content);
+    // patch 和 edit 共享相同的路径边界校验，避免越界覆盖任意文件。
+    await assertWritableSkillTarget(workspace, found.path);
     await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' patched.`);
   } catch (e) {
@@ -516,9 +529,19 @@ function getWorkspace() {
 async function findByName(name, workspace) {
   const loader = new SkillLoader();
   await loader.loadAll(workspace);
+  const skillsRoot = path.join(workspace, 'skills');
+  const resolvedSkillsRoot = await fs.promises.realpath(skillsRoot).catch(() => null);
+  const normalizedSkillsRoot = resolvedSkillsRoot ? ensureTrailingSep(resolvedSkillsRoot) : null;
 
   for (const skill of loader.getLoaded()) {
     if (skill.name === name) {
+      if (!normalizedSkillsRoot) return null;
+      // 按名称查找时校验真实路径，防止 loader 之外的外部替换绕过边界限制。
+      await rejectSymlink(skill.path);
+      const resolvedSkillPath = await fs.promises.realpath(skill.path);
+      if (!resolvedSkillPath.startsWith(normalizedSkillsRoot)) {
+        throw new Error(`Skill path escapes workspace/skills: ${skill.path}`);
+      }
       return { path: skill.path, skillDir: pathDir(skill.path) };
     }
   }
@@ -610,6 +633,47 @@ function formatError(error) {
     content: [{ type: 'text', text: `Error: ${error}` }],
     isError: true
   };
+}
+
+function escapePromptText(value, maxLength = 200) {
+  return String(value || '')
+    .replace(PROMPT_INJECTION_PATTERNS[0], '[filtered]')
+    .replace(PROMPT_INJECTION_PATTERNS[1], '[filtered]')
+    .replace(PROMPT_INJECTION_PATTERNS[2], '[filtered]')
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\r/g, ' ')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, ' ')
+    .slice(0, maxLength)
+    .trim() || 'Unknown';
+}
+
+function summarizePromptField(value, maxLength, fallback) {
+  const escaped = escapePromptText(value, maxLength);
+  return escaped || fallback;
+}
+
+async function assertWritableSkillTarget(workspace, filePath) {
+  const skillsRoot = path.join(workspace, 'skills');
+  await rejectSymlink(filePath);
+
+  const resolvedRoot = await fs.promises.realpath(skillsRoot);
+  const resolvedFile = await fs.promises.realpath(filePath);
+  if (!resolvedFile.startsWith(ensureTrailingSep(resolvedRoot))) {
+    throw new Error('resolved skill path escapes workspace/skills');
+  }
+}
+
+async function rejectSymlink(targetPath) {
+  const stat = await fs.promises.lstat(targetPath);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`symbolic link is not allowed: ${targetPath}`);
+  }
+}
+
+function ensureTrailingSep(value) {
+  return value.endsWith(path.sep) ? value : value + path.sep;
 }
 
 module.exports = plugin;
