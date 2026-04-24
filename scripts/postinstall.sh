@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PLUGIN_ID="skills-evolution"
+COMPACTION_PROVIDER_ID="skills-evolution-compactor"
 CONFIG="${HOME}/.openclaw/openclaw.json"
 
 print_next_steps() {
@@ -29,11 +30,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-jq --arg plugin "$PLUGIN_ID" '
+jq --arg plugin "$PLUGIN_ID" --arg provider "$COMPACTION_PROVIDER_ID" '
   .plugins = (.plugins // {}) |
   .plugins.entries = (.plugins.entries // {}) |
   .plugins.entries[$plugin] = ((.plugins.entries[$plugin] // {}) + {enabled: true}) |
-  .plugins.allow = ((.plugins.allow // []) | if index($plugin) then . else . + [$plugin] end)
+  .plugins.allow = ((.plugins.allow // []) | if index($plugin) then . else . + [$plugin] end) |
+  .agents = (.agents // {}) |
+  .agents.defaults = (.agents.defaults // {}) |
+  .agents.defaults.compaction = (.agents.defaults.compaction // {}) |
+  .agents.defaults.compaction.provider = (.agents.defaults.compaction.provider // $provider)
 ' "$CONFIG" > "$TEMP"
 
 mv "$TEMP" "$CONFIG"
@@ -41,4 +46,5 @@ trap - EXIT
 
 echo "[OK] Added or updated plugins.entries.${PLUGIN_ID}"
 echo "[OK] Added or verified plugins.allow contains ${PLUGIN_ID}"
+echo "[OK] Ensured agents.defaults.compaction.provider defaults to ${COMPACTION_PROVIDER_ID}"
 print_next_steps

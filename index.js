@@ -78,6 +78,9 @@ const plugin = {
           return provider.summarize({ messages, previousSummary, customInstructions, signal });
         }
       });
+      console.error('[skills-evolution] compaction provider registered: skills-evolution-compactor');
+    } else {
+      console.error('[skills-evolution] compaction provider unavailable: host API has no registerCompactionProvider');
     }
 
     // -------------------------------------------------------------------------
@@ -276,10 +279,22 @@ const plugin = {
     api.registerTool({
       name: 'trigger_review',
       description: '对当前 session 进行摘要，生成审视机会并注入到下一个 prompt。立即返回，不阻塞。',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: {
+          session_key: {
+            type: 'string',
+            description: '可选，显式指定要审视的 sessionKey。用于 HTTP /tools/invoke 等拿不到 sessionFile 的场景。'
+          },
+          session_id: {
+            type: 'string',
+            description: '可选，显式指定要审视的 sessionId。用于 HTTP /tools/invoke 等拿不到 sessionFile 的场景。'
+          }
+        }
+      },
 
       async execute(toolCallId, params, ctx) {
-        const sessionFile = ctx?.sessionFile || null;
+        const sessionFile = await resolveSessionFileFromContext(ctx, params);
 
         if (!sessionFile) {
           return formatError('sessionFile not available for trigger_review');
@@ -324,12 +339,20 @@ const plugin = {
           skill_name: {
             type: 'string',
             description: '可选，指定要创建的 skill 名称'
+          },
+          session_key: {
+            type: 'string',
+            description: '可选，显式指定要深度固化的 sessionKey。用于 HTTP /tools/invoke 等拿不到 sessionFile 的场景。'
+          },
+          session_id: {
+            type: 'string',
+            description: '可选，显式指定要深度固化的 sessionId。用于 HTTP /tools/invoke 等拿不到 sessionFile 的场景。'
           }
         }
       },
 
       async execute(toolCallId, params, ctx) {
-        const sessionFile = ctx?.sessionFile || null;
+        const sessionFile = await resolveSessionFileFromContext(ctx, params);
         const workspace = getWorkspace();
 
         if (!sessionFile) {
@@ -337,8 +360,10 @@ const plugin = {
         }
 
         try {
-          const { skillName } = params;
-          const { pendingId } = spawnDeepReview(sessionFile, workspace, skillName || null);
+          const requestedSkillName = typeof params?.skill_name === 'string' && params.skill_name.trim()
+            ? params.skill_name.trim()
+            : null;
+          const { pendingId } = spawnDeepReview(sessionFile, workspace, requestedSkillName);
 
           return formatResult(
             `Deep review spawned (id: ${pendingId}).\n` +
@@ -713,6 +738,64 @@ function ensureTrailingSep(value) {
   return value.endsWith(path.sep) ? value : value + path.sep;
 }
 
+async function resolveSessionFileFromContext(ctx, params = {}) {
+  if (typeof ctx?.sessionFile === 'string' && ctx.sessionFile.trim()) {
+    return ctx.sessionFile;
+  }
+
+  const candidates = [
+    params?.session_key,
+    params?.session_id,
+    ctx?.sessionKey,
+    ctx?.session?.key,
+    ctx?.sessionId,
+    ctx?.session?.id
+  ].filter(value => typeof value === 'string' && value.trim());
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const agentsRoot = path.join(process.env.HOME || '', '.openclaw', 'agents');
+  let agentEntries = [];
+  try {
+    agentEntries = await fs.promises.readdir(agentsRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of agentEntries) {
+    if (!entry.isDirectory()) continue;
+
+    const storePath = path.join(agentsRoot, entry.name, 'sessions', 'sessions.json');
+    let parsed = null;
+    try {
+      parsed = JSON.parse(await fs.promises.readFile(storePath, 'utf-8'));
+    } catch {
+      continue;
+    }
+
+    if (!parsed || typeof parsed !== 'object') continue;
+
+    for (const candidate of candidates) {
+      const byKey = parsed[candidate];
+      if (byKey && typeof byKey.sessionFile === 'string' && byKey.sessionFile.trim()) {
+        return byKey.sessionFile;
+      }
+
+      for (const session of Object.values(parsed)) {
+        if (!session || typeof session !== 'object') continue;
+        if (session.sessionId === candidate && typeof session.sessionFile === 'string' && session.sessionFile.trim()) {
+          return session.sessionFile;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 module.exports = plugin;
 module.exports.buildSkillContent = buildSkillContent;
 module.exports.buildReviewPrompt = buildReviewPrompt;
+module.exports.resolveSessionFileFromContext = resolveSessionFileFromContext;

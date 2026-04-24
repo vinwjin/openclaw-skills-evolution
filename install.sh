@@ -4,6 +4,9 @@
 
 set -e
 
+PLUGIN_ID="skills-evolution"
+COMPACTION_PROVIDER_ID="skills-evolution-compactor"
+NPM_PACKAGE="@vinwjin/openclaw-skills-evolution"
 EXTENSION_DIR="$HOME/.openclaw/extensions/skills-evolution"
 OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
 NPM_GLOBAL_DIR=$(npm root -g)
@@ -16,14 +19,14 @@ if ! command -v npm &>/dev/null; then
   echo "[ERROR] npm 未安装"
   exit 1
 fi
-npm install -g openclaw-skills-evolution 2>/dev/null || {
+npm install -g "$NPM_PACKAGE" 2>/dev/null || {
   echo "[ERROR] npm install 失败"
   exit 1
 }
 
 # 2. 复制到 extensions 目录（Gateway 安全策略阻止 symlink，必须用 cp）
 echo "[2/5] 复制到扩展目录..."
-NPM_PKG_DIR="$NPM_GLOBAL_DIR/openclaw-skills-evolution"
+NPM_PKG_DIR="$NPM_GLOBAL_DIR/@vinwjin/openclaw-skills-evolution"
 if [ ! -d "$NPM_PKG_DIR" ]; then
   echo "[ERROR] npm 包未找到：$NPM_PKG_DIR"
   exit 1
@@ -40,33 +43,34 @@ cp -r "$NPM_PKG_DIR" "$EXTENSION_DIR"
 # 3. 自动配置 openclaw.json
 echo "[3/5] 配置 openclaw.json..."
 update_json() {
-  local key="$1"; local value="$2"; local file="$OPENCLAW_JSON"
+  local file="$OPENCLAW_JSON"
   if [ ! -f "$file" ]; then echo "[WARN] $file 不存在，跳过自动配置"; return; fi
 
-  # 添加 plugins.entries.skills-evolution（如果缺失）
-  if ! grep -q "\"skills-evolution\"" "$file" 2>/dev/null; then
-    local tmp=$(mktemp)
-    jq --argjson val '{"enabled":true}' '.plugins.entries["skills-evolution"] = $val' "$file" > "$tmp" && mv "$tmp" "$file"
-    echo "  [OK] 添加 skills-evolution 到 plugins.entries"
-  else
-    echo "  [SKIP] plugins.entries.skills-evolution 已存在"
-  fi
+  local tmp
+  tmp=$(mktemp)
+  jq \
+    --arg plugin "$PLUGIN_ID" \
+    --arg provider "$COMPACTION_PROVIDER_ID" \
+    '
+      .plugins = (.plugins // {}) |
+      .plugins.entries = (.plugins.entries // {}) |
+      .plugins.entries[$plugin] = ((.plugins.entries[$plugin] // {}) + {enabled: true}) |
+      .plugins.allow = ((.plugins.allow // []) | if index($plugin) then . else . + [$plugin] end) |
+      .agents = (.agents // {}) |
+      .agents.defaults = (.agents.defaults // {}) |
+      .agents.defaults.compaction = (.agents.defaults.compaction // {}) |
+      .agents.defaults.compaction.provider = (.agents.defaults.compaction.provider // $provider)
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
 
-  # 添加 plugins.allow（如果缺失）
-  if ! grep -q '"skills-evolution"' "$file" 2>/dev/null; then
-    local tmp=$(mktemp)
-    jq '.plugins.allow += ["skills-evolution"]' "$file" > "$tmp" && mv "$tmp" "$file"
-    echo "  [OK] 添加 skills-evolution 到 plugins.allow"
-  else
-    echo "  [SKIP] plugins.allow.skills-evolution 已存在"
-  fi
+  echo "  [OK] 已启用插件并确保 plugins.allow 包含 $PLUGIN_ID"
+  echo "  [OK] 若未配置其他 provider，已设置 agents.defaults.compaction.provider=$COMPACTION_PROVIDER_ID"
 }
 
 if command -v jq &>/dev/null; then
   update_json
 else
   echo "  [WARN] jq 未安装，跳过自动配置"
-  echo "  请手动添加 skills-evolution 到 plugins.entries 和 plugins.allow"
+  echo "  请手动添加 skills-evolution 到 plugins.entries / plugins.allow，并设置 agents.defaults.compaction.provider=skills-evolution-compactor"
 fi
 
 # 4. 验证

@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { SkillSaver } = require('../lib/skill-saver');
 const MAX_SESSION_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_SESSION_LINES = 10000;
 const MAX_LINE_LENGTH = 10000;
@@ -40,6 +41,8 @@ const args = process.argv.slice(2);
 let sessionFile = null;
 let workspace = null;
 let skillName = null;
+let sourceSessionFile = null;
+let pendingId = null;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--session-file' && i + 1 < args.length) {
@@ -48,6 +51,10 @@ for (let i = 0; i < args.length; i++) {
     workspace = args[++i];
   } else if (args[i] === '--skill-name' && i + 1 < args.length) {
     skillName = args[++i];
+  } else if (args[i] === '--source-session-file' && i + 1 < args.length) {
+    sourceSessionFile = args[++i];
+  } else if (args[i] === '--pending-id' && i + 1 < args.length) {
+    pendingId = args[++i];
   }
 }
 
@@ -57,6 +64,7 @@ if (!sessionFile || !workspace) {
 }
 
 workspace = path.resolve(workspace);
+sourceSessionFile = sourceSessionFile || sessionFile;
 
 // ============================================================================
 // 日志
@@ -78,7 +86,7 @@ function log(msg) {
 async function main() {
   const pendingDoneFile = path.join(__dirname, '..', '.deep-review-done.json');
 
-  log(`Starting deep-review-worker: sessionFile=${sessionFile}, workspace=${workspace}, skillName=${skillName || 'auto'}`);
+  log(`Starting deep-review-worker: sessionFile=${sourceSessionFile}, workspace=${workspace}, skillName=${skillName || 'auto'}`);
 
   try {
     // 1. 读取 session JSONL
@@ -115,30 +123,32 @@ async function main() {
 
     // 3. 生成 skill 名称（如果未指定）
     const finalSkillName = skillName || generateSkillName(sessionData.topic);
-    const safeName = toSafeName(finalSkillName);
 
     // 4. 生成 SKILL.md 内容
     const skillContent = buildSkillMarkdown(sessionData, finalSkillName);
 
     // 5. 写入 skills 目录
-    const skillDir = path.join(workspace, 'skills', safeName);
-    const filePath = path.join(skillDir, 'SKILL.md');
-
-    await fs.promises.mkdir(skillDir, { recursive: true });
-    await fs.promises.writeFile(filePath, skillContent, 'utf-8');
+    const saver = new SkillSaver();
+    const { safeName, filePath } = await saver.save(workspace, {
+      name: finalSkillName,
+      content: skillContent
+    });
 
     log(`Skill written to: ${filePath}`);
 
     // 6. 记录完成状态到 .deep-review-done.json
     const doneRecord = {
+      ...(pendingId ? { pendingId } : {}),
       skillName: finalSkillName,
       safeName,
-      sessionFile,
+      sessionFile: sourceSessionFile,
+      workerSessionFile: sessionFile,
       // done 记录只保留结构化元信息，避免写入原始 session 片段。
       findingsCount: sessionData.findings.length,
       toolCount: sessionData.tools.length,
       completedAt: new Date().toISOString(),
-      filePath
+      filePath,
+      status: 'completed'
     };
 
     // 读取已有记录
@@ -155,12 +165,15 @@ async function main() {
 
     log(`Recorded to .deep-review-done.json`);
     log('Deep review completed successfully.');
+    cleanupPendingState(pendingId, sessionFile, sourceSessionFile);
 
   } catch (err) {
     log(`ERROR: ${err.message}`);
     // 记录失败状态
     const failRecord = {
-      sessionFile,
+      ...(pendingId ? { pendingId } : {}),
+      sessionFile: sourceSessionFile,
+      workerSessionFile: sessionFile,
       skillName: skillName || null,
       error: err.message,
       completedAt: new Date().toISOString()
@@ -176,6 +189,7 @@ async function main() {
 
     records.push({ ...failRecord, status: 'failed' });
     await fs.promises.writeFile(pendingDoneFile, JSON.stringify(records, null, 2) + '\n', 'utf-8');
+    cleanupPendingState(pendingId, sessionFile, sourceSessionFile);
 
     process.exit(1);
   }
@@ -262,13 +276,6 @@ function generateSkillName(topic) {
   ).join('') + 'Skill';
 }
 
-function toSafeName(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 function buildSkillMarkdown(data, name) {
   const { topic, tools, findings } = data;
 
@@ -318,6 +325,38 @@ function sanitizeFinding(value) {
     return null;
   }
   return trimmed;
+}
+
+function cleanupPendingState(id, workerSessionFile, originalSessionFile) {
+  removePendingRecord(id);
+  cleanupWorkerSessionFile(workerSessionFile, originalSessionFile);
+}
+
+function removePendingRecord(id) {
+  if (!id) return;
+
+  const pendingFile = path.join(__dirname, '..', '.pending-deep-reviews.json');
+  try {
+    if (!fs.existsSync(pendingFile)) return;
+    const parsed = JSON.parse(fs.readFileSync(pendingFile, 'utf-8'));
+    const next = Array.isArray(parsed) ? parsed.filter(record => record?.id !== id) : [];
+    fs.writeFileSync(pendingFile, JSON.stringify(next, null, 2) + '\n', 'utf-8');
+  } catch (err) {
+    log(`WARN: failed to prune pending deep review ${id}: ${err.message}`);
+  }
+}
+
+function cleanupWorkerSessionFile(workerSessionFile, originalSessionFile) {
+  if (!workerSessionFile) return;
+  const spoolRoot = path.join(__dirname, '..', '.deep-review-spool') + path.sep;
+  const resolvedWorkerFile = path.resolve(workerSessionFile);
+  if (resolvedWorkerFile === path.resolve(originalSessionFile || '')) return;
+  if (!resolvedWorkerFile.startsWith(spoolRoot)) return;
+  try {
+    fs.rmSync(resolvedWorkerFile, { force: true });
+  } catch (err) {
+    log(`WARN: failed to remove worker session file ${workerSessionFile}: ${err.message}`);
+  }
 }
 
 // ============================================================================

@@ -94,6 +94,24 @@ version: 1.0.0
 
 ## 配置
 
+### 启用压缩 Provider（必需）
+
+要让“上下文自动压缩”真正接管 OpenClaw 的 compaction，需要在 `openclaw.json` 中启用本插件注册的 provider：
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "provider": "skills-evolution-compactor"
+      }
+    }
+  }
+}
+```
+
+如果你使用仓库里的 `install.sh` 或 `scripts/postinstall.sh`，并且机器上有 `jq`，脚本会在未设置其他 provider 时自动补上这项配置。
+
 ### 压缩阈值（compaction-config.json）
 ```json
 {

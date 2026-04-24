@@ -1,6 +1,6 @@
 {
   "name": "@vinwjin/openclaw-skills-evolution",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "OpenClaw Agent 自我进化系统 — 任务中主动沉淀经验 + session 自动审视 + 上下文智能压缩",
   "main": "index.js",
   "scripts": {

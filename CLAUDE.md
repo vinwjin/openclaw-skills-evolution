@@ -73,11 +73,30 @@ skills-evolution/
 - ✅ CompactionProvider 注册成功
 - ✅ 两阶段压缩（工具剪枝 + LLM 摘要）
 - ✅ 防震荡机制（cooldown 状态持久化）
-- ✅ 语法验证全部通过
-- ⏳ 实际压缩效果待 Gateway 重启后验证
+- ✅ 语法验证全部通过（41 tests pass）
+- ⚠️ **端到端压力测试完成——见下方实测结论**
+
+### 压力测试结论（2026-04-24）
+
+**测试方法**：通过 Dashboard 连续发送 2 个重型任务，触发 sub-agent 大量消耗 context，观察 compaction 是否触发。
+
+**实测数据**：
+- 任务1：Flask REST API 50+ 接口，ctx 从 17% → 100%，sub-agent 最高 R 消耗 2.8M tokens
+- 任务2：Flask 电商扩展，ctx 从 36% → 49%，sub-agent 最高 R 消耗 2M tokens，agent 仍在工作
+- 全程 `compaction-throttle.json` 从未创建
+
+**结论**：Gateway 的 **session 刷新机制**（context exhaustion fallback）在 compaction 阈值达到之前就介入了。compaction hook 没有机会执行。
+
+**根因**：Gateway 检测到 context 接近上限 → 触发 session 刷新 → 刷新后 compaction hook 根本没机会看 session 状态
+
+**下一步验证建议**：
+1. 降低 `thresholdPercent` 到 0.2（更激进），让 compaction 在 gateway 刷新之前触发
+2. 或者在没有 sub-agent 的场景下，用大量单轮对话积累中间消息到触发点
+3. 检查 gateway 的 session 刷新阈值配置，确认与 compaction threshold 的先后关系
 
 ---
 
 ## 待做
-- Gateway 重启后验证插件加载
-- 实际对话触发压缩测试
+- [ ] 降低 thresholdPercent 重测 compaction 触发
+- [ ] 确认 gateway session 刷新与 compaction 触发的先后顺序
+- [ ] 无 sub-agent 场景下的单轮对话压力测试
