@@ -121,12 +121,13 @@ function serializeMessages(messages) {
 }
 
 async function requestSummary(prompt, config) {
-  const apiKey = process.env[String(config.apiKeyEnv || 'MINIMAX_API_KEY')];
+  const apiKey = process.env.SKILLS_EVOLUTION_COMPACTION_API_KEY
+    || process.env[String(config.apiKeyEnv || 'MINIMAX_API_KEY')];
   if (!apiKey) {
     throw new Error(`missing API key env: ${config.apiKeyEnv || 'MINIMAX_API_KEY'}`);
   }
 
-  const endpoint = buildEndpoint(config.baseUrl);
+  const request = buildApiRequest({ prompt, config, apiKey });
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timeoutMs = Math.max(1, Number(config.timeout || 120)) * 1000;
   const timeoutId = setTimeout(() => {
@@ -137,25 +138,13 @@ async function requestSummary(prompt, config) {
 
   try {
     const response = await postJson({
-      url: endpoint,
-      headers: {
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: {
-        model: String(config.model || 'MiniMax-M2.7'),
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        max_tokens: Math.max(256, Number(config.maxSummaryTokens || 4000)),
-        temperature: 0.2
-      },
+      url: request.url,
+      headers: request.headers,
+      body: request.body,
       signal: controller ? controller.signal : null
     });
 
-    const text = extractCompletionText(response);
+    const text = extractCompletionText(response, config.api);
     if (!text) {
       throw new Error('empty completion response');
     }
@@ -165,12 +154,84 @@ async function requestSummary(prompt, config) {
   }
 }
 
-function buildEndpoint(baseUrl) {
+function buildOpenAiEndpoint(baseUrl) {
   const normalized = String(baseUrl || 'https://api.minimaxi.com/v1').replace(/\/+$/, '');
   if (normalized.endsWith('/chat/completions')) {
     return normalized;
   }
   return `${normalized}/chat/completions`;
+}
+
+function buildAnthropicEndpoint(baseUrl) {
+  const normalized = String(baseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '');
+  if (normalized.endsWith('/messages')) {
+    return normalized;
+  }
+  return `${normalized}/messages`;
+}
+
+function buildApiRequest({ prompt, config, apiKey }) {
+  const api = String(config.api || 'openai-completions');
+  const model = String(config.model || 'MiniMax-M2.7');
+  const maxTokens = Math.max(256, Number(config.maxSummaryTokens || 4000));
+
+  if (api === 'anthropic-messages') {
+    return {
+      url: buildAnthropicEndpoint(config.baseUrl),
+      headers: buildAnthropicHeaders(config, apiKey),
+      body: {
+        model,
+        system: 'Produce a compact handoff summary for context compaction.',
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.2
+      }
+    };
+  }
+
+  return {
+    url: buildOpenAiEndpoint(config.baseUrl),
+    headers: {
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      max_tokens: maxTokens,
+      temperature: 0.2
+    }
+  };
+}
+
+function buildAnthropicHeaders(config, apiKey) {
+  const headers = {
+    'anthropic-version': String(config.anthropicVersion || '2023-06-01')
+  };
+
+  const authMode = String(config.authHeader || '').toLowerCase();
+  if (authMode === 'authorization') {
+    headers.Authorization = `Bearer ${apiKey}`;
+    return headers;
+  }
+
+  if (authMode === 'x-api-key') {
+    headers['x-api-key'] = apiKey;
+    return headers;
+  }
+
+  headers.Authorization = `Bearer ${apiKey}`;
+  headers['x-api-key'] = apiKey;
+  return headers;
 }
 
 async function postJson({ url, headers, body, signal }) {
@@ -240,9 +301,23 @@ async function postJson({ url, headers, body, signal }) {
   });
 }
 
-function extractCompletionText(response) {
+function extractCompletionText(response, api) {
   if (!response || typeof response !== 'object') {
     return '';
+  }
+
+  if (String(api || '') === 'anthropic-messages') {
+    const anthropicText = response?.content;
+    if (Array.isArray(anthropicText)) {
+      return anthropicText
+        .map(part => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part.text === 'string') return part.text;
+          return '';
+        })
+        .join('\n')
+        .trim();
+    }
   }
 
   const choiceText = response?.choices?.[0]?.message?.content;
@@ -305,6 +380,7 @@ function safeStringify(value) {
 }
 
 module.exports = {
+  buildApiRequest,
   parseArgs,
   parseMessages,
   serializeMessages,

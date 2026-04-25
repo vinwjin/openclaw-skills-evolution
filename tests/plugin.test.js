@@ -1,5 +1,5 @@
-/**
- * Skills Evolution Plugin — Test Suite
+﻿/**
+ * Skills Evolution Plugin 鈥?Test Suite
  * Run: node tests/plugin.test.js
  */
 
@@ -11,6 +11,8 @@ const { SkillLoader } = require('../lib/skill-loader.js');
 const { SkillSaver } = require('../lib/skill-saver.js');
 const { SessionSummarizer } = require('../lib/session-summarizer.js');
 const { getPendingReviews } = require('../lib/skill-summarizer-agent.js');
+const compactionProvider = require('../lib/compaction-provider.js');
+const compactionSummarizer = require('../scripts/compaction-summarizer.js');
 const plugin = require('../index.js');
 const { resolveSessionFileFromContext } = require('../index.js');
 const pluginRoot = path.dirname(require.resolve('../index.js'));
@@ -27,10 +29,10 @@ function pass(name) { suitePassed++; console.log(`  PASS ${name}`); }
 function fail(name, reason) { suiteFailed++; console.log(`  FAIL ${name}: ${reason}`); }
 function assertEq(actual, expected, msg) {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
-    throw new Error(`${msg} — got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    throw new Error(`${msg} 鈥?got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
 }
 function assertTrue(v, msg) {
-  if (!v) throw new Error(`${msg} — got falsy`);
+  if (!v) throw new Error(`${msg} 鈥?got falsy`);
 }
 function makeSkillDir(suffix) {
   const dir = `/tmp/se-test-${suffix}-${process.pid}`;
@@ -146,9 +148,9 @@ console.log('\n[SkillLoader parseFrontmatter]');
     const skill = await loadFrom(dir1);
     const triggers = skill?.frontmatter?.triggers;
     if (triggers && JSON.stringify(triggers) === JSON.stringify(['item1', 'item2']))
-      pass('nested sub-items excluded — item2 found after sub-item');
+      pass('nested sub-items excluded 鈥?item2 found after sub-item');
     else
-      fail('nested sub-items excluded — item2 found after sub-item',
+      fail('nested sub-items excluded 鈥?item2 found after sub-item',
         `got ${JSON.stringify(triggers)}, want ["item1","item2"]`);
   }
   rmrf(dir1);
@@ -637,7 +639,7 @@ console.log('\n[Review Prompt + Persistence]');
   });
   if (prompt.includes('```text\nnpm version 0.4.5\n```') &&
       prompt.includes('[filtered]') &&
-      prompt.includes('上一个 session 主题摘要'))
+      prompt.includes('上一轮 session 主题摘要'))
     pass('review prompt escapes injected topic and findings');
   else
     fail('review prompt escapes injected topic and findings', prompt);
@@ -772,6 +774,124 @@ console.log('\n[Review Prompt + Persistence]');
   restoreOptionalFile(deepReviewDonePath, deepReviewDoneSnapshot);
   process.env.HOME = previousHome;
   rmrf(tmpHome);
+}
+
+console.log('\n[Compaction Runtime Config]');
+{
+  const runtimeConfig = await compactionProvider.loadRuntimeConfig({
+    runtime: {
+      modelAuth: {
+        async resolveApiKeyForProvider(providerId) {
+          return providerId === 'minimax' ? 'host-secret' : '';
+        }
+      }
+    },
+    hostConfig: {
+      agents: {
+        defaults: {
+          model: {
+            model: 'MiniMax-M2.7',
+            provider: 'minimax',
+            modelApi: 'anthropic-messages'
+          }
+        }
+      },
+      providers: {
+        minimax: {
+          baseUrl: 'https://api.minimaxi.com/v1',
+          modelApi: 'anthropic-messages'
+        }
+      }
+    }
+  });
+
+  if (runtimeConfig.model === 'MiniMax-M2.7' &&
+      runtimeConfig.provider === 'minimax' &&
+      runtimeConfig.api === 'anthropic-messages' &&
+      runtimeConfig.resolvedApiKey === 'host-secret')
+    pass('loadRuntimeConfig prefers OpenClaw model + auth when available');
+  else
+    fail('loadRuntimeConfig prefers OpenClaw model + auth when available', JSON.stringify(runtimeConfig));
+}
+
+console.log('\n[Compaction Transport]');
+{
+  const openAiRequest = compactionSummarizer.buildApiRequest({
+    prompt: 'Summarize this context',
+    apiKey: 'openai-secret',
+    config: {
+      model: 'gpt-test',
+      api: 'openai-completions',
+      baseUrl: 'https://example.com/v1'
+    }
+  });
+
+  if (openAiRequest.url === 'https://example.com/v1/chat/completions' &&
+      openAiRequest.headers.Authorization === 'Bearer openai-secret' &&
+      openAiRequest.body.model === 'gpt-test')
+    pass('openai transport builds chat completions request');
+  else
+    fail('openai transport builds chat completions request', JSON.stringify(openAiRequest));
+
+  const anthropicRequest = compactionSummarizer.buildApiRequest({
+    prompt: 'Summarize this context',
+    apiKey: 'anthropic-secret',
+    config: {
+      model: 'claude-test',
+      api: 'anthropic-messages',
+      authHeader: 'x-api-key',
+      baseUrl: 'https://example.com/v1'
+    }
+  });
+
+  if (anthropicRequest.url === 'https://example.com/v1/messages' &&
+      anthropicRequest.headers['x-api-key'] === 'anthropic-secret' &&
+      anthropicRequest.body.model === 'claude-test')
+    pass('anthropic transport builds messages request');
+  else
+    fail('anthropic transport builds messages request', JSON.stringify(anthropicRequest));
+}
+
+console.log('\n[Compaction Provider Registration]');
+{
+  const registered = {};
+  const originalSummarize = compactionProvider.summarize;
+  let observedArgs = null;
+
+  compactionProvider.summarize = async args => {
+    observedArgs = args;
+    return 'summary ok';
+  };
+
+  try {
+    plugin.register({
+      on() {},
+      registerTool() {},
+      registerCompactionProvider(provider) {
+        registered.provider = provider;
+      },
+      runtime: { runtimeName: 'host-runtime' },
+      hostConfig: { source: 'api-host-config' }
+    });
+
+    await registered.provider.summarize({
+      messages: [],
+      previousSummary: 'prev',
+      customInstructions: 'keep latest ask',
+      signal: null
+    }, {
+      runtime: { runtimeName: 'ctx-runtime' },
+      config: { source: 'ctx-config' }
+    });
+
+    if (observedArgs?.runtime?.runtimeName === 'ctx-runtime' &&
+        observedArgs?.hostConfig?.source === 'ctx-config')
+      pass('registered compaction provider forwards runtime + host config');
+    else
+      fail('registered compaction provider forwards runtime + host config', JSON.stringify(observedArgs));
+  } finally {
+    compactionProvider.summarize = originalSummarize;
+  }
 }
 
 // ============================================================================

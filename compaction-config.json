@@ -1,11 +1,13 @@
-{
+﻿{
   "enabled": true,
   "thresholdPercent": 0.5,
   "protectFirstN": 3,
   "protectLastN": 20,
   "summaryTargetRatio": 0.2,
+  "preferOpenClawAuthModel": true,
   "model": "MiniMax-M2.7",
   "provider": "minimax-cn",
+  "api": "openai-completions",
   "baseUrl": "https://api.minimaxi.com/v1",
   "apiKeyEnv": "MINIMAX_API_KEY",
   "timeout": 120,

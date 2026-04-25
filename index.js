@@ -1,11 +1,11 @@
-/**
+﻿/**
  * OpenClaw Skills Evolution Plugin
- * v0.5: 子 Agent 后台固化 + 主动审视指令 + 任务中主动发现
+ * v0.6.3: Host 鉴权/模型优先的 compaction + 发布整理
  *
- * 升级内容：
- * 1. session_end 时 spawn 子 Agent 在后台完成 skill 固化，主 Agent 不阻塞
- * 2. 新增 trigger_review / trigger_deep_review 工具，用户可主动触发审视
- * 3. before_prompt_build 增加复杂度检测，超过 10 次工具调用则主动注入发现提示
+ * 鍗囩骇鍐呭锛?
+ * 1. session_end 鏃?spawn 瀛?Agent 鍦ㄥ悗鍙板畬鎴?skill 鍥哄寲锛屼富 Agent 涓嶉樆濉?
+ * 2. 鏂板 trigger_review / trigger_deep_review 宸ュ叿锛岀敤鎴峰彲涓诲姩瑙﹀彂瀹¤
+ * 3. before_prompt_build 澧炲姞澶嶆潅搴︽娴嬶紝瓒呰繃 10 娆″伐鍏疯皟鐢ㄥ垯涓诲姩娉ㄥ叆鍙戠幇鎻愮ず
  */
 
 const fs = require('fs');
@@ -17,7 +17,7 @@ const { SessionSummarizer } = require('./lib/session-summarizer');
 const { spawnDeepReview } = require('./lib/skill-summarizer-agent');
 
 // ============================================================================
-// 全局待审视 session 队列
+// 鍏ㄥ眬寰呭瑙?session 闃熷垪
 // ============================================================================
 const pendingReviews = [];
 const pendingReviewsFile = path.join(__dirname, '.pending-reviews.json');
@@ -35,7 +35,7 @@ const PROMPT_INJECTION_PATTERNS = [
 const plugin = {
   id: 'skills-evolution',
   name: 'Skills Evolution',
-  description: 'Skills 自我进化系统 — 双轨沉淀经验为可复用 SKILL.md',
+  description: 'Skills 鑷垜杩涘寲绯荤粺 鈥?鍙岃建娌夋穩缁忛獙涓哄彲澶嶇敤 SKILL.md',
 
   configSchema: {
     type: 'object',
@@ -73,9 +73,16 @@ const plugin = {
       api.registerCompactionProvider({
         id: 'skills-evolution-compactor',
         label: 'Skills Evolution Compactor',
-        summarize: async ({ messages, previousSummary, customInstructions, signal }) => {
+        summarize: async ({ messages, previousSummary, customInstructions, signal }, ctx) => {
           const provider = require('./lib/compaction-provider');
-          return provider.summarize({ messages, previousSummary, customInstructions, signal });
+          return provider.summarize({
+            messages,
+            previousSummary,
+            customInstructions,
+            signal,
+            runtime: ctx?.runtime || api.runtime || api.host?.runtime,
+            hostConfig: ctx?.config || ctx?.hostConfig || api.config || api.hostConfig
+          });
         }
       });
       console.error('[skills-evolution] compaction provider registered: skills-evolution-compactor');
@@ -84,7 +91,7 @@ const plugin = {
     }
 
     // -------------------------------------------------------------------------
-    // 轨道2-A：session_end — spawn 子 Agent 固化（不阻塞）
+    // 杞ㄩ亾2-A锛歴ession_end 鈥?spawn 瀛?Agent 鍥哄寲锛堜笉闃诲锛?
     // -------------------------------------------------------------------------
     api.on('session_end', async (event, ctx) => {
       const sessionId = ctx?.sessionId || event.sessionId || event.session?.id;
@@ -95,37 +102,37 @@ const plugin = {
       try {
         await loadPendingReviews();
 
-        // 读取并摘要 session（同步，毫秒级）
+        // 璇诲彇骞舵憳瑕?session锛堝悓姝ワ紝姣绾э級
         const summarizer = new SessionSummarizer();
         const summary = await summarizer.summarize(sessionFile);
         if (!summary) return;
 
-        // 存入待审视队列
+        // 瀛樺叆寰呭瑙嗛槦鍒?
         pendingReviews.push({
           ...summary,
           timestamp: Date.now()
         });
         await savePendingReviews();
 
-        // 立即 spawn 子 Agent 做深度固化（不阻塞）
+        // 绔嬪嵆 spawn 瀛?Agent 鍋氭繁搴﹀浐鍖栵紙涓嶉樆濉烇級
         const workspace = getWorkspace();
         spawnDeepReview(sessionFile, workspace, null);
 
-        console.error(`[skills-evolution] session_end: queued + spawned deep-review — topic="${summary?.topic || 'none'}"`);
+        console.error(`[skills-evolution] session_end: queued + spawned deep-review 鈥?topic="${summary?.topic || 'none'}"`);
       } catch (err) {
-        console.error(`[skills-evolution] session_end error: ${sessionId} — ${err.message}`);
+        console.error(`[skills-evolution] session_end error: ${sessionId} 鈥?${err.message}`);
       }
     });
 
     // -------------------------------------------------------------------------
-    // 轨道2-B：before_prompt_build — 注入审视机会 + 复杂度检测
+    // 杞ㄩ亾2-B锛歜efore_prompt_build 鈥?娉ㄥ叆瀹¤鏈轰細 + 澶嶆潅搴︽娴?
     // -------------------------------------------------------------------------
     api.on('before_prompt_build', async (event, ctx) => {
       await loadPendingReviews();
 
       const parts = [];
 
-      // 1. 复杂度检测：当前 session 工具调用超过阈值时主动注入发现提示
+      // 1. 澶嶆潅搴︽娴嬶細褰撳墠 session 宸ュ叿璋冪敤瓒呰繃闃堝€兼椂涓诲姩娉ㄥ叆鍙戠幇鎻愮ず
       const toolCallCount = countToolCalls(event);
       const COMPLEXITY_THRESHOLD = 10;
       if (toolCallCount > COMPLEXITY_THRESHOLD) {
@@ -135,16 +142,16 @@ const plugin = {
           tools: extractToolsFromEvent(event)
         });
         parts.push(complexityPrompt);
-        console.error(`[skills-evolution] before_prompt_build: complexity detected — ${toolCallCount} tool calls`);
+        console.error(`[skills-evolution] before_prompt_build: complexity detected 鈥?${toolCallCount} tool calls`);
       }
 
-      // 2. 如果有待审视的 session，注入审视提示
+      // 2. 濡傛灉鏈夊緟瀹¤鐨?session锛屾敞鍏ュ瑙嗘彁绀?
       if (pendingReviews.length > 0) {
         const entry = pendingReviews.shift();
         if (entry) {
           await savePendingReviews();
           parts.push(buildReviewPrompt(entry));
-          console.error(`[skills-evolution] before_prompt_build: injected review — topic="${entry.topic}", remaining=${pendingReviews.length}`);
+          console.error(`[skills-evolution] before_prompt_build: injected review 鈥?topic="${entry.topic}", remaining=${pendingReviews.length}`);
         }
       }
 
@@ -154,30 +161,30 @@ const plugin = {
     });
 
     // -------------------------------------------------------------------------
-    // 轨道1：skill_manage 工具（保持不变）
+    // 杞ㄩ亾1锛歴kill_manage 宸ュ叿锛堜繚鎸佷笉鍙橈級
     // -------------------------------------------------------------------------
     api.registerTool({
       name: 'skill_manage',
       description:
-        '管理 Skills — 创建新 Skill 或更新已有 Skill。' +
-        'Skills 是可重用的工作流文档，存储在 ~/.openclaw/workspace/skills/。' +
-        '当发现复杂问题的解决方案、反复出现的任务模式、或被纠正的错误时，创建 Skill。' +
-        "action='create' 时，content 只需提供 Markdown 正文；可选的 description、triggers、actions 会自动写入 YAML frontmatter。",
+        '管理 Skills：创建新 Skill 或更新已有 Skill。'
+        + ' Skills 是可复用的工作流文档，存储在 ~/.openclaw/workspace/skills/。'
+        + ' 当发现复杂问题的解决方案、反复出现的任务模式或被纠正的错误时，可以创建 Skill。'
+        + " action='create' 时，content 只需要提供 Markdown 正文；可选的 description、triggers、actions 会自动写入 YAML frontmatter。",
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
             enum: ['create', 'edit', 'patch', 'delete'],
-            description: "操作类型：'create'(新建), 'edit'(全量重写), 'patch'(局部替换), 'delete'(删除)"
+            description: "鎿嶄綔绫诲瀷锛?create'(鏂板缓), 'edit'(鍏ㄩ噺閲嶅啓), 'patch'(灞€閮ㄦ浛鎹?, 'delete'(鍒犻櫎)"
           },
           name: {
             type: 'string',
-            description: 'Skill 名称（用于标识和检索）'
+            description: 'Skill 鍚嶇О锛堢敤浜庢爣璇嗗拰妫€绱級'
           },
           content: {
             type: 'string',
-            description: "Skill 内容。用于 action='create' 时传入 Markdown 正文；用于 action='edit' 时传入完整 SKILL.md（含 YAML frontmatter）。"
+            description: "Skill 内容。用于 action='create' 时传入 Markdown 正文；用于 action='edit' 时传入完整的 SKILL.md（含 YAML frontmatter）。"
           },
           description: {
             type: 'string',
@@ -195,11 +202,11 @@ const plugin = {
           },
           old_string: {
             type: 'string',
-            description: "要替换的文本。用于 action='patch'。必须完全匹配（包括空白）。"
+            description: "要替换的文本。用于 action='patch'，必须完整匹配（包括空白）。"
           },
           new_string: {
             type: 'string',
-            description: "替换文本。用于 action='patch'。空字符串表示删除。"
+            description: "替换后的文本。用于 action='patch'，空字符串表示删除。"
           }
         },
         required: ['action', 'name']
@@ -219,7 +226,7 @@ const plugin = {
 
     api.registerTool({
       name: 'skill_list',
-      description: '列出所有可用的 Skills，显示名称和描述。',
+      description: '列出所有可用的 Skills，并显示名称和描述。',
       parameters: { type: 'object', properties: {} },
 
       async execute(toolCallId, params) {
@@ -240,11 +247,11 @@ const plugin = {
 
     api.registerTool({
       name: 'skill_search',
-      description: '在 Skills 中搜索关键词，返回匹配的 Skills 列表。',
+      description: '在 Skills 中搜索关键词，并返回匹配的 Skill 列表。',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '搜索关键词' }
+          query: { type: 'string', description: '搜索关键词。' }
         },
         required: ['query']
       },
@@ -274,11 +281,11 @@ const plugin = {
     });
 
     // -------------------------------------------------------------------------
-    // v0.5 新增：主动审视工具
+    // v0.5 鏂板锛氫富鍔ㄥ瑙嗗伐鍏?
     // -------------------------------------------------------------------------
     api.registerTool({
       name: 'trigger_review',
-      description: '对当前 session 进行摘要，生成审视机会并注入到下一个 prompt。立即返回，不阻塞。',
+      description: '对当前 session 进行摘要，生成审视机会并注入到下一轮 prompt。立即返回，不阻塞主流程。',
       parameters: {
         type: 'object',
         properties: {
@@ -307,7 +314,7 @@ const plugin = {
             return formatError('Failed to summarize session');
           }
 
-          // 注入审视机会到 pendingReviews（供 before_prompt_build 使用）
+          // 娉ㄥ叆瀹¤鏈轰細鍒?pendingReviews锛堜緵 before_prompt_build 浣跨敤锛?
           pendingReviews.push({
             ...summary,
             timestamp: Date.now(),
@@ -322,7 +329,7 @@ const plugin = {
           return formatResult(
             `Review triggered for session: "${topic}".\n` +
             `Tools used: ${toolCount}, Key findings: ${findingsCount}.\n` +
-            `审视提示已注入到下一个 prompt，当前 pending reviews: ${pendingReviews.length}`
+            `审视提示已注入到下一轮 prompt，当前 pending reviews: ${pendingReviews.length}`
           );
         } catch (err) {
           return formatError(`trigger_review failed: ${err.message}`);
@@ -332,13 +339,13 @@ const plugin = {
 
     api.registerTool({
       name: 'trigger_deep_review',
-      description: 'Spawn 子 Agent 在后台做深度固化。立即返回，不阻塞。可通过查询 .deep-review-done.json 查看结果。',
+      description: 'Spawn 子 Agent 在后台做深度固化。立即返回，不阻塞主流程；结果会写入 .deep-review-done.json。',
       parameters: {
         type: 'object',
         properties: {
           skill_name: {
             type: 'string',
-            description: '可选，指定要创建的 skill 名称'
+            description: '可选，指定要创建的 Skill 名称。'
           },
           session_key: {
             type: 'string',
@@ -367,8 +374,8 @@ const plugin = {
 
           return formatResult(
             `Deep review spawned (id: ${pendingId}).\n` +
-            `后台固化进程已启动，结果将写入 ~/.openclaw/extensions/skills-evolution/.deep-review-done.json\n` +
-            `可通过检查该文件查看完成状态。`
+            `后台固化进程已启动，结果会写入 ~/.openclaw/extensions/skills-evolution/.deep-review-done.json\n` +
+            '可以通过查看该文件确认完成状态。'
           );
         } catch (err) {
           return formatError(`trigger_deep_review failed: ${err.message}`);
@@ -383,11 +390,11 @@ const plugin = {
 // ============================================================================
 
 // -------------------------------------------------------------------------
-// 复杂度检测辅助函数（用于 before_prompt_build 主动发现）
+// 澶嶆潅搴︽娴嬭緟鍔╁嚱鏁帮紙鐢ㄤ簬 before_prompt_build 涓诲姩鍙戠幇锛?
 // -------------------------------------------------------------------------
 
 /**
- * 从 event 对象统计当前 session 的工具调用次数
+ * 浠?event 瀵硅薄缁熻褰撳墠 session 鐨勫伐鍏疯皟鐢ㄦ鏁?
  */
 function countToolCalls(event) {
   const messages = event?.messages || [];
@@ -409,7 +416,7 @@ function countToolCalls(event) {
 }
 
 /**
- * 从 event 对象提取主题（第一个用户消息前80字符）
+ * 浠?event 瀵硅薄鎻愬彇涓婚锛堢涓€涓敤鎴锋秷鎭墠80瀛楃锛?
  */
 function extractTopicFromEvent(event) {
   const messages = event?.messages || [];
@@ -427,7 +434,7 @@ function extractTopicFromEvent(event) {
 }
 
 /**
- * 从 event 对象提取用到的工具列表
+ * 浠?event 瀵硅薄鎻愬彇鐢ㄥ埌鐨勫伐鍏峰垪琛?
  */
 function extractToolsFromEvent(event) {
   const messages = event?.messages || [];
@@ -452,24 +459,26 @@ function extractToolsFromEvent(event) {
 }
 
 /**
- * 构建复杂度触发的主动发现提示
+ * 鏋勫缓澶嶆潅搴﹁Е鍙戠殑涓诲姩鍙戠幇鎻愮ず
  */
 function buildComplexityPrompt({ topic, toolCallCount, tools }) {
   const topicSummary = summarizePromptField(topic, 60, '复杂任务');
-  const toolList = tools.length > 0 ? `工具数量: ${tools.length}（示例: ${tools.slice(0, 5).map(tool => escapePromptText(tool, 30)).join(', ')}${tools.length > 5 ? '...' : ''}）` : '工具数量: 0';
+  const toolList = tools.length > 0
+    ? `工具数量: ${tools.length}（示例：${tools.slice(0, 5).map(tool => escapePromptText(tool, 30)).join(', ')}${tools.length > 5 ? '...' : ''}）`
+    : '工具数量: 0';
   return `
-## 🎯 检测到值得沉淀的经验
+## 检测到值得沉淀的经验
 
-你在完成一个复杂任务（主题摘要：${topicSummary}，${toolCallCount}次工具调用）。这类复杂问题的解决方案通常值得固化。
+你刚完成了一个复杂任务（主题摘要：${topicSummary}；工具调用 ${toolCallCount} 次）。这类任务的解决方案通常值得固化。
 
 ${toolList}
 
-如果这个解决方案是通用的，可以调用 trigger_deep_review 启动后台固化流程。
+如果这套做法具有通用性，可以调用 trigger_deep_review 启动后台固化流程。
 `;
 }
 
 // -------------------------------------------------------------------------
-// Session 摘要审视提示
+// Session 鎽樿瀹¤鎻愮ず
 // -------------------------------------------------------------------------
 
 function buildReviewPrompt(entry) {
@@ -485,11 +494,11 @@ function buildReviewPrompt(entry) {
   return `
 ## 经验审视机会
 
-上一个 session 主题摘要：**${safeTopic}**
+上一轮 session 主题摘要：**${safeTopic}**
 ${toolList}
 ${findingsBlock}
 
-如果这个 session 中发现了值得复用的解决方案、反复出现的模式、或被纠正的错误，考虑调用 skill_manage create 沉淀为 SKILL.md。
+如果这个 session 里出现了值得复用的方案、反复出现的模式，或被纠正的错误，请考虑调用 skill_manage create 沉淀成一个 SKILL.md。
 `;
 }
 
@@ -503,8 +512,8 @@ function buildSkillContent(name, body, opts = {}) {
 
   appendYamlList(lines, 'triggers', triggers);
   appendYamlList(lines, 'actions', actions);
-  lines.unshift('---');  // 在最前面插入 '---'
-  lines.push('---', ''); // 闭合 frontmatter
+  lines.unshift('---');  // 鍦ㄦ渶鍓嶉潰鎻掑叆 '---'
+  lines.push('---', ''); // 闂悎 frontmatter
 
   const normalizedBody = body.endsWith('\n') ? body : `${body}\n`;
   return `${lines.join('\n')}${normalizedBody}`;
@@ -534,7 +543,7 @@ async function handleEdit(name, content) {
   try {
     const saver = new SkillSaver();
     saver.validate(content);
-    // 写入前再次校验真实路径，阻止已存在 skill 被符号链接劫持。
+    // 鍐欏叆鍓嶅啀娆℃牎楠岀湡瀹炶矾寰勶紝闃绘宸插瓨鍦?skill 琚鍙烽摼鎺ュ姭鎸併€?
     await assertWritableSkillTarget(workspace, found.path);
     await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' updated.`);
@@ -558,7 +567,7 @@ async function handlePatch(name, old_string, new_string) {
     content = content.replace(old_string, new_string || '');
     const saver = new SkillSaver();
     saver.validate(content);
-    // patch 和 edit 共享相同的路径边界校验，避免越界覆盖任意文件。
+    // patch 鍜?edit 鍏变韩鐩稿悓鐨勮矾寰勮竟鐣屾牎楠岋紝閬垮厤瓒婄晫瑕嗙洊浠绘剰鏂囦欢銆?
     await assertWritableSkillTarget(workspace, found.path);
     await fs.promises.writeFile(found.path, content, 'utf-8');
     return formatResult(`Skill '${name}' patched.`);
@@ -596,7 +605,7 @@ async function findByName(name, workspace) {
   for (const skill of loader.getLoaded()) {
     if (skill.name === name) {
       if (!normalizedSkillsRoot) return null;
-      // 按名称查找时校验真实路径，防止 loader 之外的外部替换绕过边界限制。
+      // 鎸夊悕绉版煡鎵炬椂鏍￠獙鐪熷疄璺緞锛岄槻姝?loader 涔嬪鐨勫閮ㄦ浛鎹㈢粫杩囪竟鐣岄檺鍒躲€?
       await rejectSymlink(skill.path);
       const resolvedSkillPath = await fs.promises.realpath(skill.path);
       if (!resolvedSkillPath.startsWith(normalizedSkillsRoot)) {
@@ -650,7 +659,7 @@ async function loadPendingReviews() {
     if (!fs.existsSync(pendingReviewsFile)) return;
 
     const stat = await fs.promises.stat(pendingReviewsFile);
-    // 文件未更新，跳过
+    // 鏂囦欢鏈洿鏂帮紝璺宠繃
     if (stat.mtimeMs <= pendingReviewsMtime) return;
 
     const raw = await fs.promises.readFile(pendingReviewsFile, 'utf-8');
