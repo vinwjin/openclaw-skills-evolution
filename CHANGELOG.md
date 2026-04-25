@@ -11,6 +11,7 @@
 - compaction provider 在注册时传入 OpenClaw runtime 与 host config，优先解析默认模型、provider 与 `runtime.modelAuth.resolveApiKeyForProvider(...)`。
 - 子进程摘要器支持 `openai-completions` 与 `anthropic-messages` 两种传输方式，自动切换 endpoint、headers 与 body。
 - README 同步补充 0.6.3 发布说明、最新 compaction 配置示例与版本记录。
+- 新增中英双语 GitHub Releases 页面文案：`docs/releases/v0.6.3.md`。
 
 ### Verified
 - `node tests/plugin.test.js`

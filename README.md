@@ -12,6 +12,7 @@
 - compaction provider 现在优先复用 OpenClaw 当前会话的鉴权、provider 与默认模型。
 - 子进程摘要器新增 `openai-completions` 与 `anthropic-messages` 两种 API 传输适配。
 - 补齐发布文档、打包清单与回归测试，便于 GitHub / npm 同步发布。
+- GitHub Releases 双语文案见 `docs/releases/v0.6.3.md`。
 
 ---
 
@@ -148,4 +149,4 @@ openclaw-skills-evolution/
 | `v0.4` | 双轨沉淀：任务中主动固化 + session 结束时自动审视 |
 | `v0.3` | 基础 Skills CRUD + 搜索 |
 
-详细变更见 [CHANGELOG.md](./CHANGELOG.md)。
+详细变更见 [CHANGELOG.md](./CHANGELOG.md)，GitHub Releases 页面文案见 [docs/releases/v0.6.3.md](./docs/releases/v0.6.3.md)。
