@@ -1,5 +1,21 @@
 ﻿# Changelog
 
+## 0.6.4 - 2026-04-26
+
+### Added
+- 新增运行时相关 Skill 自动注入：`before_prompt_build` 会为当前任务匹配并注入高质量、可复用的 Skill。
+- 新增 `lib/skill-quality.js`，统一识别占位模板、低质量产物与不可复用 Skill。
+- 新增围绕 deep review 质量、Skill 过滤、相关 Skill 注入与中英混合检索的回归测试，并补齐标准 `npm test` 入口。
+
+### Changed
+- deep-review worker 现在会跳过 startup/system 噪音 session，生成结构化、可复用的工作流型 `SKILL.md`，不再产出占位空壳。
+- Skill 检索与自动注入增强了常见中英工作流词桥接与中文短语拆解，中文任务更容易命中英文 Skill。
+- `trigger_review` / `session_end` 的 pending review 队列改为去重合并，避免重复审视同类 session。
+
+### Verified
+- `npm test --silent`
+- `npm pack --dry-run`
+
 ## 0.6.3 - 2026-04-25
 
 ### Added

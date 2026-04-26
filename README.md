@@ -7,12 +7,12 @@
 
 ---
 
-## 0.6.3 更新
+## 0.6.4 更新
 
-- compaction provider 现在优先复用 OpenClaw 当前会话的鉴权、provider 与默认模型。
-- 子进程摘要器新增 `openai-completions` 与 `anthropic-messages` 两种 API 传输适配。
-- 补齐发布文档、打包清单与回归测试，便于 GitHub / npm 同步发布。
-- GitHub Releases 双语文案见 `docs/releases/v0.6.3.md`。
+- deep review 产出的 `SKILL.md` 改为可复用工作流结构，过滤 startup/system 噪音，不再生成占位空壳 Skill。
+- `before_prompt_build` 会自动注入当前任务相关的高质量 Skill，同时把低质量 / 占位 Skill 挡在运行时之外。
+- Skill 检索新增常见中英工作流词桥接，中文任务描述命中英文 Skill 的稳定性更高。
+- 增加 `npm test` 标准入口，并补齐围绕 deep review 质量、Skill 过滤、相关 Skill 注入的回归测试。
 
 ---
 
@@ -143,6 +143,7 @@ openclaw-skills-evolution/
 
 | 版本 | 说明 |
 | --- | --- |
+| `v0.6.4` | 自主沉淀出的 Skill 改为可复用工作流；运行时自动注入相关高质量 Skill；增强中英混合技能库匹配质量 |
 | `v0.6.3` | OpenClaw host 鉴权/模型优先、补齐双 API 传输、完善发布文档与测试 |
 | `v0.6` | 新增 `CompactionProvider` 与 `before/after_compaction` hooks，实现上下文自动压缩 |
 | `v0.5` | 安全修复：Prompt 注入、符号链接覆盖、敏感信息泄露、DoS |

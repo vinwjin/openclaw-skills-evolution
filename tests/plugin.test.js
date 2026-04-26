@@ -13,6 +13,8 @@ const { SessionSummarizer } = require('../lib/session-summarizer.js');
 const { getPendingReviews } = require('../lib/skill-summarizer-agent.js');
 const compactionProvider = require('../lib/compaction-provider.js');
 const compactionSummarizer = require('../scripts/compaction-summarizer.js');
+const { assessSkillQuality } = require('../lib/skill-quality.js');
+const deepReviewWorker = require('../scripts/deep-review-worker.js');
 const plugin = require('../index.js');
 const { resolveSessionFileFromContext } = require('../index.js');
 const pluginRoot = path.dirname(require.resolve('../index.js'));
@@ -131,6 +133,14 @@ console.log('\n[SkillIndex]');
     const r = idx3.search('git');
     if (r.length === 0) pass('tokenized matching avoids substring false positives');
     else fail('tokenized matching avoids substring false positives', `got ${JSON.stringify(r)}`);
+  }
+
+  {
+    const idx4 = new SkillIndex();
+    idx4.add({ name: 'Agent Browser', description: 'browser automation with deterministic element selection', triggers: [], actions: [], content: '' });
+    const r = idx4.search('浏览器自动化 稳定 元素 选择');
+    if (r.length > 0 && r[0].name === 'Agent Browser') pass('search bridges common Chinese/English workflow terms');
+    else fail('search bridges common Chinese/English workflow terms', `got ${JSON.stringify(r)}`);
   }
 }
 
@@ -556,6 +566,460 @@ console.log('\n[Session File Resolution]');
   }
 }
 
+console.log('\n[Deep Review Worker]');
+{
+  const detailedEntries = [
+    {
+      type: 'message',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '[Sat 2026-04-25 13:40 GMT+8] Prepare deployment rollback checklist' }]
+      }
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: [
+            '1. Inspect the current release notes before editing.',
+            '2. Update the rollback checklist with backup verification and owner handoff.',
+            '3. Verify the checklist with `node tests/plugin.test.js` before shipping.',
+            '```bash',
+            'node tests/plugin.test.js',
+            '```',
+            '```md',
+            'Verify backup integrity',
+            '```'
+          ].join('\n') },
+          { type: 'toolCall', name: 'read_file', args: JSON.stringify({ path: '/tmp/release-notes.md' }) },
+          { type: 'toolCall', name: 'exec', args: JSON.stringify({ command: 'node tests/plugin.test.js' }) }
+        ]
+      }
+    }
+  ];
+
+  const extracted = deepReviewWorker.extractSessionData(detailedEntries);
+  const generatedName = deepReviewWorker.generateSkillName(extracted.topic);
+  const generatedMarkdown = deepReviewWorker.buildSkillMarkdown(extracted, generatedName);
+
+  if (extracted.topic === 'Prepare deployment rollback checklist')
+    pass('deep-review worker normalizes noisy timestamp prefixes from topic');
+  else
+    fail('deep-review worker normalizes noisy timestamp prefixes from topic', JSON.stringify(extracted.topic));
+
+  if (generatedName === 'prepareDeploymentRollbackChecklistSkill')
+    pass('deep-review worker generates descriptive skill names');
+  else
+    fail('deep-review worker generates descriptive skill names', JSON.stringify(generatedName));
+
+  if (generatedMarkdown.includes('## Workflow') &&
+      generatedMarkdown.includes('Inspect `/tmp/release-notes.md` before making follow-up changes.') &&
+      generatedMarkdown.includes('Run `node tests/plugin.test.js` and confirm it passes cleanly.') &&
+      !generatedMarkdown.includes('<!-- Add detailed steps based on session content -->'))
+    pass('deep-review worker produces reusable workflow content instead of placeholders');
+  else
+    fail('deep-review worker produces reusable workflow content instead of placeholders', generatedMarkdown);
+
+  const lowValueEntries = [
+    {
+      type: 'message',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'System: [2026-04-25 23:49:17 GMT+8] [SECRETS_RELOADER_DEGRADED] Secret resolution degraded' }]
+      }
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', name: 'exec', args: JSON.stringify({ command: 'echo diagnostics' }) }]
+      }
+    }
+  ];
+
+  const lowValueData = deepReviewWorker.extractSessionData(lowValueEntries);
+  const skipReason = deepReviewWorker.getSkipReason(lowValueData);
+  if (typeof skipReason === 'string' && skipReason.includes('low-value topic'))
+    pass('deep-review worker skips infrastructure-noise sessions');
+  else
+    fail('deep-review worker skips infrastructure-noise sessions', JSON.stringify(skipReason));
+}
+
+console.log('\n[Relevant Skill Injection]');
+{
+  const previousHome = process.env.HOME;
+  const tmpHome = `/tmp/se-relevant-skills-${process.pid}`;
+  const workspace = path.join(tmpHome, '.openclaw', 'workspace');
+  const pendingReviewsSnapshot = readOptionalFile(pendingReviewsPath);
+  const saver = new SkillSaver();
+  const handlers = new Map();
+
+  rmrf(tmpHome);
+  fs.mkdirSync(workspace, { recursive: true });
+  process.env.HOME = tmpHome;
+  try { fs.unlinkSync(pendingReviewsPath); } catch (e) {}
+
+  await saver.save(workspace, {
+    name: 'Rollback Checklist',
+    content: plugin.buildSkillContent('Rollback Checklist', [
+      '# Rollback Checklist',
+      '',
+      '## Workflow',
+      '',
+      '1. Inspect the current release notes before editing.',
+      '2. Update the rollback checklist with backup verification and owner handoff.',
+      '',
+      '## Verification',
+      '',
+      '- Verify backup integrity before shipping.',
+      '',
+      '## Notes',
+      '',
+      '- Keep release owners aligned on rollback approval.'
+    ].join('\n'), {
+      description: 'Reusable rollback checklist workflow',
+      triggers: ['prepare deployment rollback checklist'],
+      actions: ['review context', 'execute workflow', 'verify outcome']
+    })
+  });
+
+  await saver.save(workspace, {
+    name: 'Rollback Checklist Placeholder',
+    content: [
+      '---',
+      'name: "Rollback Checklist Placeholder"',
+      'description: "Skill extracted from session: prepare deployment rollback checklist"',
+      'triggers:',
+      '  - "prepare deployment rollback checklist"',
+      'actions:',
+      '  - "summary"',
+      '---',
+      '',
+      '# Rollback Checklist Placeholder',
+      '',
+      '## Overview',
+      '',
+      'Brief description of the approach used in this session.',
+      '',
+      '## Steps',
+      '',
+      '<!-- Add detailed steps based on session content -->',
+      '',
+      '## Notes',
+      '',
+      '<!-- Add any important notes or caveats -->',
+      ''
+    ].join('\n')
+  });
+
+  await saver.save(workspace, {
+    name: 'General Notes',
+    content: plugin.buildSkillContent('General Notes', [
+      '# General Notes',
+      '',
+      'Prepare deployment rollback checklist and verify backup integrity before release.',
+      '',
+      'These are loose notes, not a reusable named workflow.'
+    ].join('\n'), {
+      description: 'Loose session notes',
+      triggers: ['misc notes'],
+      actions: ['review context']
+    })
+  });
+
+  await saver.save(workspace, {
+    name: 'Agent Browser',
+    content: plugin.buildSkillContent('Agent Browser', [
+      '# Agent Browser',
+      '',
+      '## Workflow',
+      '',
+      '1. Open the target page with the browser automation CLI.',
+      '2. Use deterministic element refs before you click or fill.',
+      '',
+      '## Verification',
+      '',
+      '- Re-snapshot after each page transition.',
+      '',
+      '## Notes',
+      '',
+      '- Prefer stable element selection for multi-step form workflows.'
+    ].join('\n'), {
+      description: 'browser automation with deterministic element selection',
+      triggers: ['browser automation', 'deterministic element selection'],
+      actions: ['execute workflow', 'verify outcome']
+    })
+  });
+
+  plugin.register({
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerTool() {}
+  });
+
+  const injected = await handlers.get('before_prompt_build')({
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Prepare deployment rollback checklist and verify backup integrity before release.' }]
+      }
+    ]
+  }, {});
+
+  if (injected?.appendSystemContext?.includes('## Relevant Skills') &&
+      injected?.appendSystemContext?.includes('Rollback Checklist') &&
+      injected?.appendSystemContext?.includes('Inspect the current release notes before editing.'))
+    pass('before_prompt_build injects relevant reusable skills for the current task');
+  else
+    fail('before_prompt_build injects relevant reusable skills for the current task', JSON.stringify(injected));
+
+  if (!injected?.appendSystemContext?.includes('Rollback Checklist Placeholder') &&
+      !injected?.appendSystemContext?.includes('Add detailed steps based on session content'))
+    pass('before_prompt_build excludes placeholder-generated skills from auto injection');
+  else
+    fail('before_prompt_build excludes placeholder-generated skills from auto injection', JSON.stringify(injected));
+
+  if (!injected?.appendSystemContext?.includes('General Notes'))
+    pass('before_prompt_build avoids content-only skill matches without strong trigger overlap');
+  else
+    fail('before_prompt_build avoids content-only skill matches without strong trigger overlap', JSON.stringify(injected));
+
+  const browserInjected = await handlers.get('before_prompt_build')({
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '帮我做浏览器自动化，多步表单填写，最好是稳定的元素选择' }]
+      }
+    ]
+  }, {});
+
+  if (browserInjected?.appendSystemContext?.includes('Agent Browser'))
+    pass('before_prompt_build bridges Chinese task phrasing to English browser skills');
+  else
+    fail('before_prompt_build bridges Chinese task phrasing to English browser skills', JSON.stringify(browserInjected));
+
+  restoreOptionalFile(pendingReviewsPath, pendingReviewsSnapshot);
+  process.env.HOME = previousHome;
+  rmrf(tmpHome);
+}
+
+console.log('\n[Skill Quality Filtering]');
+{
+  const placeholderDoc = {
+    name: 'Generated Placeholder',
+    description: 'Skill extracted from session: system notice',
+    triggers: ['System: [2026-04-25 23:49:17 GMT+8] [SECRETS_RELOADER_DEGRADED] Secret resolution degraded'],
+    actions: ['summary'],
+    content: [
+      '# Generated Placeholder',
+      '',
+      'Brief description of the approach used in this session.',
+      '',
+      '<!-- Add detailed steps based on session content -->'
+    ].join('\n')
+  };
+
+  const quality = assessSkillQuality(placeholderDoc);
+  if (!quality.reusable &&
+      quality.reasons.includes('generated placeholder description') &&
+      quality.reasons.includes('placeholder content'))
+    pass('skill-quality marks generated placeholder skills as non-reusable');
+  else
+    fail('skill-quality marks generated placeholder skills as non-reusable', JSON.stringify(quality));
+}
+
+console.log('\n[Skill List + Search Filtering]');
+{
+  const previousHome = process.env.HOME;
+  const tmpHome = `/tmp/se-skill-filtering-${process.pid}`;
+  const workspace = path.join(tmpHome, '.openclaw', 'workspace');
+  const registeredTools = new Map();
+  const saver = new SkillSaver();
+
+  rmrf(tmpHome);
+  fs.mkdirSync(workspace, { recursive: true });
+  process.env.HOME = tmpHome;
+
+  await saver.save(workspace, {
+    name: 'Deploy Checklist',
+    content: plugin.buildSkillContent('Deploy Checklist', [
+      '# Deploy Checklist',
+      '',
+      '## Workflow',
+      '',
+      '1. Review the deployment scope.',
+      '2. Update the rollout checklist.',
+      '',
+      '## Verification',
+      '',
+      '- Run the validation command before release.',
+      '',
+      '## Notes',
+      '',
+      '- Keep stakeholder communication aligned.'
+    ].join('\n'), {
+      description: 'Reusable deploy checklist',
+      triggers: ['deploy checklist'],
+      actions: ['review context', 'execute workflow', 'verify outcome']
+    })
+  });
+
+  await saver.save(workspace, {
+    name: 'Generated Placeholder',
+    content: [
+      '---',
+      'name: "Generated Placeholder"',
+      'description: "Skill extracted from session: system notice"',
+      'triggers:',
+      '  - "System: [2026-04-25 23:49:17 GMT+8] [SECRETS_RELOADER_DEGRADED] Secret resolution degraded"',
+      'actions:',
+      '  - "summary"',
+      '---',
+      '',
+      '# Generated Placeholder',
+      '',
+      'Brief description of the approach used in this session.',
+      '',
+      '<!-- Add detailed steps based on session content -->',
+      ''
+    ].join('\n')
+  });
+
+  plugin.register({
+    on() {},
+    registerTool(tool) {
+      registeredTools.set(tool.name, tool);
+    }
+  });
+
+  const skillList = registeredTools.get('skill_list');
+  const skillSearch = registeredTools.get('skill_search');
+  const listResult = await skillList.execute('list-1', {});
+  const searchResult = await skillSearch.execute('search-1', { query: 'system notice' });
+
+  if (listResult?.content?.[0]?.text?.includes('Deploy Checklist') &&
+      !listResult?.content?.[0]?.text?.includes('Generated Placeholder') &&
+      listResult?.content?.[0]?.text?.includes('Hidden low-quality/generated skills: 1'))
+    pass('skill_list hides low-quality skills by default');
+  else
+    fail('skill_list hides low-quality skills by default', JSON.stringify(listResult));
+
+  if (searchResult?.content?.[0]?.text === 'No skills matching "system notice"')
+    pass('skill_search excludes low-quality skills from search results');
+  else
+    fail('skill_search excludes low-quality skills from search results', JSON.stringify(searchResult));
+
+  process.env.HOME = previousHome;
+  rmrf(tmpHome);
+}
+
+console.log('\n[Compaction Runtime Bridge]');
+{
+  const config = {
+    enabled: true,
+    thresholdPercent: 0.5,
+    protectFirstN: 3,
+    protectLastN: 20,
+    summaryTargetRatio: 0.2,
+    preferOpenClawAuthModel: true,
+    model: 'auto',
+    provider: 'minimax-cn',
+    api: 'openai-completions',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    apiKeyEnv: 'MINIMAX_API_KEY',
+    timeout: 120,
+    maxSummaryTokens: 4000
+  };
+
+  const runtime = {
+    modelAuth: {
+      async resolveApiKeyForProvider({ provider }) {
+        if (provider === 'minimax') return { apiKey: 'runtime-secret' };
+        return {};
+      }
+    }
+  };
+
+  const hostConfig = {
+    agents: {
+      defaults: {
+        model: {
+          primary: 'minimax/MiniMax-M2.7'
+        }
+      }
+    },
+    models: {
+      providers: {
+        minimax: {
+          baseUrl: 'https://api.minimaxi.com/anthropic',
+          api: 'anthropic-messages'
+        }
+      }
+    }
+  };
+
+  const resolved = await compactionProvider.resolveRuntimeCompactionContext({
+    config,
+    runtime,
+    hostConfig
+  });
+
+  if (resolved?.config?.provider === 'minimax' &&
+      resolved?.config?.model === 'MiniMax-M2.7' &&
+      resolved?.config?.api === 'anthropic-messages' &&
+      resolved?.config?.baseUrl === 'https://api.minimaxi.com/anthropic' &&
+      resolved?.envOverrides?.MINIMAX_API_KEY === 'runtime-secret')
+    pass('resolveRuntimeCompactionContext uses OpenClaw provider/model/auth first');
+  else
+    fail('resolveRuntimeCompactionContext uses OpenClaw provider/model/auth first', JSON.stringify(resolved));
+
+  const disabled = await compactionProvider.resolveRuntimeCompactionContext({
+    config: {
+      ...config,
+      preferOpenClawAuthModel: false
+    },
+    runtime,
+    hostConfig
+  });
+
+  if (disabled?.config?.provider === 'minimax-cn' &&
+      disabled?.config?.model === 'auto' &&
+      Object.keys(disabled?.envOverrides || {}).length === 0)
+    pass('resolveRuntimeCompactionContext keeps local config when runtime bridge disabled');
+  else
+    fail('resolveRuntimeCompactionContext keeps local config when runtime bridge disabled', JSON.stringify(disabled));
+}
+
+console.log('\n[Compaction Summarizer Transport]');
+{
+  const openAIEndpoint = compactionSummarizer.buildOpenAIEndpoint('https://example.com/v1/');
+  if (openAIEndpoint === 'https://example.com/v1/chat/completions')
+    pass('buildOpenAIEndpoint appends chat completion suffix');
+  else
+    fail('buildOpenAIEndpoint appends chat completion suffix', openAIEndpoint);
+
+  const anthropicEndpoint = compactionSummarizer.buildAnthropicEndpoint('https://api.minimaxi.com/anthropic/');
+  if (anthropicEndpoint === 'https://api.minimaxi.com/anthropic/v1/messages')
+    pass('buildAnthropicEndpoint appends messages suffix');
+  else
+    fail('buildAnthropicEndpoint appends messages suffix', anthropicEndpoint);
+
+  const anthropicText = compactionSummarizer.extractAnthropicText({
+    content: [
+      { type: 'text', text: 'line-1' },
+      { type: 'tool_use', name: 'ignored' },
+      { type: 'text', text: 'line-2' }
+    ]
+  });
+
+  if (anthropicText === 'line-1\nline-2')
+    pass('extractAnthropicText keeps only text blocks');
+  else
+    fail('extractAnthropicText keeps only text blocks', anthropicText);
+}
+
 console.log('\n[Trigger Review Fallback]');
 {
   const previousHome = process.env.HOME;
@@ -693,6 +1157,51 @@ console.log('\n[Review Prompt + Persistence]');
   else
     fail('before_prompt_build updates persisted queue after dequeue', JSON.stringify(remaining));
 
+  const lowValueSessionFile = `/tmp/se-session-low-value-${process.pid}.jsonl`;
+  fs.writeFileSync(lowValueSessionFile, [
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'user', content: [{ type: 'text', text: 'A new session was started via /new or /reset. Execute your Session Startup sequence.' }] }
+    }),
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'No reusable workflow here.' }] }
+    })
+  ].join('\n') + '\n');
+
+  await handlers.get('session_end')({ sessionFile: lowValueSessionFile }, { sessionId: 'persist-low-value' });
+  const lowValuePending = fs.existsSync(pendingReviewsPath)
+    ? JSON.parse(fs.readFileSync(pendingReviewsPath, 'utf-8'))
+    : null;
+
+  if (Array.isArray(lowValuePending) && lowValuePending.length === 0)
+    pass('session_end skips low-value startup reviews');
+  else
+    fail('session_end skips low-value startup reviews', JSON.stringify(lowValuePending));
+
+  const duplicateSessionFile = `/tmp/se-session-duplicate-${process.pid}.jsonl`;
+  fs.writeFileSync(duplicateSessionFile, [
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'user', content: [{ type: 'text', text: '[Sat 2026-04-25 13:40 GMT+8] Prepare deployment rollback checklist' }] }
+    }),
+    JSON.stringify({
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'text', text: '```md\nVerify backup integrity\n```' }] }
+    })
+  ].join('\n') + '\n');
+
+  await handlers.get('session_end')({ sessionFile: duplicateSessionFile }, { sessionId: 'persist-duplicate-1' });
+  await handlers.get('session_end')({ sessionFile: duplicateSessionFile }, { sessionId: 'persist-duplicate-2' });
+  const dedupedPending = fs.existsSync(pendingReviewsPath)
+    ? JSON.parse(fs.readFileSync(pendingReviewsPath, 'utf-8'))
+    : null;
+
+  if (Array.isArray(dedupedPending) && dedupedPending.length === 1)
+    pass('session_end deduplicates pending reviews by normalized topic');
+  else
+    fail('session_end deduplicates pending reviews by normalized topic', JSON.stringify(dedupedPending));
+
   const deepReviewRecord = await waitFor(() => {
     return readJsonArray(deepReviewDonePath).find(record =>
       record?.sessionFile === sessionFile && record?.status === 'completed'
@@ -768,6 +1277,8 @@ console.log('\n[Review Prompt + Persistence]');
     fail('manual deep review clears pending queue', JSON.stringify(readJsonArray(pendingDeepReviewsPath)));
 
   fs.unlinkSync(sessionFile);
+  fs.unlinkSync(lowValueSessionFile);
+  fs.unlinkSync(duplicateSessionFile);
   fs.unlinkSync(manualSessionFile);
   restoreOptionalFile(pendingReviewsPath, pendingReviewsSnapshot);
   restoreOptionalFile(pendingDeepReviewsPath, pendingDeepSnapshot);

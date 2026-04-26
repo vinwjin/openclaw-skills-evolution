@@ -167,7 +167,10 @@ function buildAnthropicEndpoint(baseUrl) {
   if (normalized.endsWith('/messages')) {
     return normalized;
   }
-  return `${normalized}/messages`;
+  if (normalized.endsWith('/v1')) {
+    return `${normalized}/messages`;
+  }
+  return `${normalized}/v1/messages`;
 }
 
 function buildApiRequest({ prompt, config, apiKey }) {
@@ -340,6 +343,27 @@ function extractCompletionText(response, api) {
   return typeof fallback === 'string' ? fallback.trim() : '';
 }
 
+function buildOpenAIEndpoint(baseUrl) {
+  return buildOpenAiEndpoint(baseUrl);
+}
+
+function extractAnthropicText(response) {
+  const content = response?.content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+
+  return extractCompletionText(response, 'anthropic-messages');
+}
+
 function extractMessageText(message) {
   if (!message) return '';
   if (typeof message.content === 'string') {
@@ -381,6 +405,9 @@ function safeStringify(value) {
 
 module.exports = {
   buildApiRequest,
+  buildOpenAIEndpoint,
+  buildAnthropicEndpoint,
+  extractAnthropicText,
   parseArgs,
   parseMessages,
   serializeMessages,

@@ -12,9 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const { SkillLoader } = require('./lib/skill-loader');
 const { SkillSaver } = require('./lib/skill-saver');
-const { SkillIndex } = require('./lib/skill-index');
+const { SkillIndex, tokenize } = require('./lib/skill-index');
 const { SessionSummarizer } = require('./lib/session-summarizer');
 const { spawnDeepReview } = require('./lib/skill-summarizer-agent');
+const { filterReusableSkillDocs } = require('./lib/skill-quality');
 
 // ============================================================================
 // 鍏ㄥ眬寰呭瑙?session 闃熷垪
@@ -27,6 +28,25 @@ const PROMPT_INJECTION_PATTERNS = [
   /call\s+skill_manage/i,
   /system\s+prompt/i
 ];
+const LOW_VALUE_REVIEW_PATTERNS = [
+  /^a new session was started via \/new or \/reset/i,
+  /^hello[,!\s].*help me with coding/i,
+  /^\/tools\b/i,
+  /请回复[:：]/i,
+  /\b(smoke|live|provider|payload)_ready\b/i,
+  /write a dream diary entry/i
+];
+const LOW_SIGNAL_TOOL_NAMES = new Set(['read', 'write', 'process', 'message']);
+const MAX_PENDING_REVIEWS = 20;
+const MAX_RELEVANT_SKILLS = 2;
+const MIN_RELEVANT_SKILL_SCORE = 2;
+const MAX_SKILL_PROMPT_CHARS = 1600;
+const SKILL_QUERY_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'be', 'before', 'but', 'by', 'for', 'from', 'how', 'in',
+  'into', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'their', 'this', 'to', 'up',
+  'use', 'with', 'your', '你', '你们', '我们', '需要', '然后', '这个', '那个', '以及', '并且',
+  '进行', '处理', '一个', '一些', '当前'
+]);
 
 // ============================================================================
 // Plugin Definition
@@ -106,12 +126,20 @@ const plugin = {
         const summarizer = new SessionSummarizer();
         const summary = await summarizer.summarize(sessionFile);
         if (!summary) return;
+        if (!shouldQueuePendingReview(summary)) {
+          console.error(`[skills-evolution] session_end: skipped low-value review — topic="${summary?.topic || 'none'}"`);
+          return;
+        }
 
-        // 瀛樺叆寰呭瑙嗛槦鍒?
-        pendingReviews.push({
+        // 存入待审视队列
+        const queued = mergePendingReview({
           ...summary,
           timestamp: Date.now()
         });
+        if (!queued) {
+          console.error(`[skills-evolution] session_end: skipped duplicate review — topic="${summary?.topic || 'none'}"`);
+          return;
+        }
         await savePendingReviews();
 
         // 绔嬪嵆 spawn 瀛?Agent 鍋氭繁搴﹀浐鍖栵紙涓嶉樆濉烇級
@@ -145,7 +173,18 @@ const plugin = {
         console.error(`[skills-evolution] before_prompt_build: complexity detected 鈥?${toolCallCount} tool calls`);
       }
 
-      // 2. 濡傛灉鏈夊緟瀹¤鐨?session锛屾敞鍏ュ瑙嗘彁绀?
+      // 2. 为当前任务注入高相关的可复用 Skill
+      try {
+        const relevantSkills = await findRelevantSkillsForEvent(event);
+        if (relevantSkills.length > 0) {
+          parts.push(buildRelevantSkillsPrompt(relevantSkills));
+          console.error(`[skills-evolution] before_prompt_build: injected ${relevantSkills.length} relevant skill(s)`);
+        }
+      } catch (err) {
+        console.error(`[skills-evolution] relevant skill injection error: ${err.message}`);
+      }
+
+      // 3. 如果有待审视的 session，注入审视提示
       if (pendingReviews.length > 0) {
         const entry = pendingReviews.shift();
         if (entry) {
@@ -233,15 +272,23 @@ const plugin = {
         const loader = new SkillLoader();
         const workspace = getWorkspace();
         const skills = await loader.loadAll(workspace);
+        const parsedSkills = skills.map(parseSkillContent);
+        const { reusable, excluded } = filterReusableSkillDocs(parsedSkills);
 
         if (skills.length === 0) {
           return formatResult('No skills found in ~/.openclaw/workspace/skills/');
         }
+        if (reusable.length === 0) {
+          return formatResult(`No reusable skills found. Hidden low-quality/generated skills: ${excluded.length}`);
+        }
 
-        const lines = skills.map(s =>
-          `- **${s.name}**: ${s.frontmatter.description || ''}`
+        const lines = reusable.map(s =>
+          `- **${s.name}**: ${s.description || ''}`
         );
-        return formatResult(`Available Skills (${skills.length}):\n\n${lines.join('\n')}`);
+        const suffix = excluded.length > 0
+          ? `\n\nHidden low-quality/generated skills: ${excluded.length}`
+          : '';
+        return formatResult(`Available reusable Skills (${reusable.length}):\n\n${lines.join('\n')}${suffix}`);
       }
     });
 
@@ -262,10 +309,12 @@ const plugin = {
         const loader = new SkillLoader();
         const workspace = getWorkspace();
         await loader.loadAll(workspace);
+        const parsedSkills = loader.getLoaded().map(parseSkillContent);
+        const { reusable } = filterReusableSkillDocs(parsedSkills);
 
         const index = new SkillIndex();
-        for (const skill of loader.getLoaded()) {
-          index.add(parseSkillContent(skill));
+        for (const skill of reusable) {
+          index.add(skill);
         }
 
         const results = index.search(query);
@@ -314,8 +363,8 @@ const plugin = {
             return formatError('Failed to summarize session');
           }
 
-          // 娉ㄥ叆瀹¤鏈轰細鍒?pendingReviews锛堜緵 before_prompt_build 浣跨敤锛?
-          pendingReviews.push({
+          // 注入审视机会到 pendingReviews（供 before_prompt_build 使用）
+          mergePendingReview({
             ...summary,
             timestamp: Date.now(),
             triggered: true
@@ -502,6 +551,35 @@ ${findingsBlock}
 `;
 }
 
+function buildRelevantSkillsPrompt(skills) {
+  const sections = skills.map(skill => {
+    const triggers = Array.isArray(skill.triggers) && skill.triggers.length > 0
+      ? `Triggers: ${skill.triggers.slice(0, 3).map(trigger => escapePromptText(trigger, 80)).join(' | ')}`
+      : 'Triggers: none recorded';
+    const actions = Array.isArray(skill.actions) && skill.actions.length > 0
+      ? `Actions: ${skill.actions.slice(0, 4).map(action => escapePromptText(action, 40)).join(', ')}`
+      : 'Actions: none recorded';
+
+    return [
+      `### ${escapePromptText(skill.name, 80)}`,
+      `Description: ${escapePromptText(skill.description || 'No description provided.', 160)}`,
+      triggers,
+      actions,
+      '```md',
+      trimSkillPromptBody(skill.content),
+      '```'
+    ].join('\n');
+  });
+
+  return `
+## Relevant Skills
+
+The following existing skills look relevant to the current task. Reuse them when they fit, but adapt them to the current constraints instead of following them blindly.
+
+${sections.join('\n\n')}
+`;
+}
+
 function buildSkillContent(name, body, opts = {}) {
   const lines = [`name: ${toYamlString(name)}`];
   const { description, triggers, actions } = opts;
@@ -650,7 +728,9 @@ function parseSkillContent(skill) {
     description: frontmatter.description || '',
     triggers: Array.isArray(frontmatter.triggers) ? frontmatter.triggers : [],
     actions: Array.isArray(frontmatter.actions) ? frontmatter.actions : [],
-    content: bodyContent
+    content: bodyContent,
+    sourcePath: skill.path,
+    sourceDir: pathDir(skill.path)
   };
 }
 
@@ -667,7 +747,7 @@ async function loadPendingReviews() {
     if (!Array.isArray(parsed)) return;
 
     pendingReviews.length = 0;
-    pendingReviews.push(...parsed.filter(isValidPendingReview));
+    pendingReviews.push(...normalizePendingReviews(parsed));
     pendingReviewsMtime = stat.mtimeMs;
   } catch (err) {
     console.error(`[skills-evolution] pending review load error: ${err.message}`);
@@ -676,11 +756,16 @@ async function loadPendingReviews() {
 
 async function savePendingReviews() {
   try {
+    const normalized = normalizePendingReviews(pendingReviews);
+    pendingReviews.length = 0;
+    pendingReviews.push(...normalized);
     await fs.promises.writeFile(
       pendingReviewsFile,
       JSON.stringify(pendingReviews, null, 2) + '\n',
       'utf-8'
     );
+    const stat = await fs.promises.stat(pendingReviewsFile);
+    pendingReviewsMtime = stat.mtimeMs;
   } catch (err) {
     console.error(`[skills-evolution] pending review save error: ${err.message}`);
   }
@@ -723,6 +808,85 @@ function escapePromptText(value, maxLength = 200) {
 function summarizePromptField(value, maxLength, fallback) {
   const escaped = escapePromptText(value, maxLength);
   return escaped || fallback;
+}
+
+function shouldQueuePendingReview(entry, opts = {}) {
+  if (!isValidPendingReview(entry)) return false;
+
+  const topic = normalizeReviewTopic(entry.topic);
+  const allowLowValue = opts.allowLowValue === true || entry.triggered === true;
+  if (!allowLowValue && isLowValueReviewTopic(topic)) {
+    return false;
+  }
+
+  const tools = Array.isArray(entry.tools)
+    ? entry.tools.filter(tool => typeof tool === 'string' && tool.trim())
+    : [];
+  const findings = Array.isArray(entry.keyFindings)
+    ? entry.keyFindings.filter(finding => typeof finding === 'string' && finding.trim())
+    : [];
+  const strongTools = tools.filter(tool => !LOW_SIGNAL_TOOL_NAMES.has(tool.trim().toLowerCase()));
+  const hasActionableSignal = findings.length > 0 || strongTools.length > 0 || tools.length >= 3;
+
+  if (allowLowValue) {
+    return true;
+  }
+
+  if (!hasActionableSignal) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizePendingReviews(entries) {
+  const next = [];
+  const seen = new Set();
+
+  for (const entry of entries) {
+    if (!shouldQueuePendingReview(entry)) continue;
+    const dedupeKey = buildPendingReviewKey(entry.topic);
+    if (!dedupeKey || seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    next.push({
+      topic: String(entry.topic).trim(),
+      tools: Array.isArray(entry.tools) ? entry.tools : [],
+      keyFindings: Array.isArray(entry.keyFindings) ? entry.keyFindings : [],
+      skillPrompts: Array.isArray(entry.skillPrompts) ? entry.skillPrompts : [],
+      ...typeof entry.timestamp === 'number' ? { timestamp: entry.timestamp } : {},
+      ...entry.triggered === true ? { triggered: true } : {}
+    });
+    if (next.length >= MAX_PENDING_REVIEWS) break;
+  }
+
+  return next;
+}
+
+function mergePendingReview(entry) {
+  const beforeKeys = new Set(pendingReviews.map(item => buildPendingReviewKey(item.topic)).filter(Boolean));
+  pendingReviews.push(entry);
+  const normalized = normalizePendingReviews(pendingReviews);
+  pendingReviews.length = 0;
+  pendingReviews.push(...normalized);
+  const entryKey = buildPendingReviewKey(entry.topic);
+  return Boolean(entryKey) && pendingReviews.some(item => buildPendingReviewKey(item.topic) === entryKey) && !beforeKeys.has(entryKey);
+}
+
+function buildPendingReviewKey(topic) {
+  const normalized = normalizeReviewTopic(topic);
+  return normalized || null;
+}
+
+function normalizeReviewTopic(topic) {
+  return String(topic || '')
+    .replace(/^\[[^\]]+\]\s*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function isLowValueReviewTopic(topic) {
+  return LOW_VALUE_REVIEW_PATTERNS.some(pattern => pattern.test(topic));
 }
 
 async function assertWritableSkillTarget(workspace, filePath) {
@@ -802,6 +966,102 @@ async function resolveSessionFileFromContext(ctx, params = {}) {
   }
 
   return null;
+}
+
+async function findRelevantSkillsForEvent(event) {
+  const query = buildSkillQueryFromEvent(event);
+  if (!query) return [];
+  const queryTokens = tokenizeSkillQuery(query);
+  if (queryTokens.length === 0) return [];
+
+  const loader = new SkillLoader();
+  const workspace = getWorkspace();
+  await loader.loadAll(workspace);
+
+  const docs = loader.getLoaded().map(parseSkillContent);
+  const { reusable } = filterReusableSkillDocs(docs);
+  const docsToIndex = reusable;
+  if (docsToIndex.length === 0) return [];
+
+  const index = new SkillIndex();
+  for (const doc of docsToIndex) {
+    index.add(doc);
+  }
+
+  const byName = new Map(docsToIndex.map(doc => [doc.name, doc]));
+  return index.search(query)
+    .filter(result => result.score >= MIN_RELEVANT_SKILL_SCORE)
+    .filter(result => {
+      const doc = byName.get(result.name);
+      return doc && hasStrongSkillOverlap(doc, queryTokens);
+    })
+    .slice(0, MAX_RELEVANT_SKILLS)
+    .map(result => byName.get(result.name))
+    .filter(Boolean);
+}
+
+function buildSkillQueryFromEvent(event) {
+  const userTexts = extractUserTextsFromEvent(event);
+  const lastUserText = userTexts.length > 0 ? userTexts[userTexts.length - 1] : '';
+  const toolNames = extractToolsFromEvent(event);
+  const query = [lastUserText, toolNames.slice(0, 5).join(' ')].filter(Boolean).join(' ').trim();
+  return query.length >= 8 ? query : '';
+}
+
+function extractUserTextsFromEvent(event) {
+  const messages = event?.messages || [];
+  const texts = [];
+
+  for (const msg of messages) {
+    if (msg?.role !== 'user') continue;
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    for (const block of content) {
+      if (block?.type === 'text' && typeof block?.text === 'string' && block.text.trim()) {
+        texts.push(block.text.trim());
+      }
+    }
+  }
+
+  return texts;
+}
+
+function trimSkillPromptBody(content) {
+  const normalized = String(content || '').trim();
+  if (!normalized) return 'No content.';
+  if (normalized.length <= MAX_SKILL_PROMPT_CHARS) return normalized;
+  return normalized.slice(0, MAX_SKILL_PROMPT_CHARS - 24).trimEnd() + '\n...[trimmed]';
+}
+
+function hasStrongSkillOverlap(doc, queryTokens) {
+  const nameAndTriggerTokens = tokenizeSkillQuery([
+    doc.name,
+    ...(Array.isArray(doc.triggers) ? doc.triggers : [])
+  ].join(' '));
+  const descriptiveTokens = tokenizeSkillQuery([
+    doc.description,
+    ...(Array.isArray(doc.actions) ? doc.actions : [])
+  ].join(' '));
+
+  const nameOverlap = countTokenOverlap(queryTokens, nameAndTriggerTokens);
+  if (nameOverlap >= 1) return true;
+
+  const descriptiveOverlap = countTokenOverlap(queryTokens, descriptiveTokens);
+  return descriptiveOverlap >= 2;
+}
+
+function tokenizeSkillQuery(text) {
+  return tokenize(String(text || ''))
+    .filter(token => token.length >= 2)
+    .filter(token => !SKILL_QUERY_STOPWORDS.has(token));
+}
+
+function countTokenOverlap(left, right) {
+  const rightSet = new Set(right);
+  let count = 0;
+  for (const token of left) {
+    if (rightSet.has(token)) count++;
+  }
+  return count;
 }
 
 module.exports = plugin;

@@ -1,8 +1,8 @@
 ﻿{
   "id": "skills-evolution",
   "name": "Skills Evolution",
-  "version": "0.6.3",
-  "description": "Skills 自我进化系统——Agent 主动沉淀经验、session 自动审视、上下文压缩。",
+  "version": "0.6.4",
+  "description": "Skills 自我进化系统 — Agent 主动沉淀经验 + session 结束时自动审视 + 上下文压缩",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
